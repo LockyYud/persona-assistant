@@ -27,7 +27,7 @@ cp .env.example .env   # fill in DATABASE_URL, secrets, Google/Telegram/LLM keys
 pnpm --filter @persona/db generate   # already run once; re-run after schema changes
 pnpm --filter @persona/db migrate    # applies packages/db/drizzle/*.sql to DATABASE_URL
 pnpm --filter @persona/worker seed   # inserts the allowlisted user row
-pnpm --filter @persona/worker telegram:onboard -- duy.dm@teko.vn  # links Telegram chat_id
+pnpm --filter @persona/worker exec tsx src/scripts/telegram-onboarding.ts duy.dm@teko.vn  # links Telegram chat_id
 
 pnpm dev:worker   # http://localhost:8787
 pnpm dev:web      # http://localhost:3000
