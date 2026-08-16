@@ -70,9 +70,28 @@ curl -X POST "https://api.telegram.org/bot<TELEGRAM_BOT_TOKEN>/setWebhook" \
   against `users.telegram_chat_id` (single allowlisted user — no arbitrary
   Telegram user can use the bot as a chat interface even if they find it).
   Same `AgentRuntime.chat()` call as the web chat, so it shares the same
-  tools and audit trail; it does not currently share conversation history
-  with the web UI or across turns (each message is a fresh single-turn call —
-  a pre-existing limitation of `chat()`, not specific to Telegram).
+  tools, audit trail, conversation history, and memory.
+- **Conversation memory.** `conversation_messages` stores the last 20
+  messages per conversation and replays them on every turn — the web UI
+  keeps its own `conversationId` across calls; Telegram has no such concept,
+  so it reuses the user's most recently active conversation instead of
+  starting fresh every message. Both channels therefore share one continuous
+  thread unless the web client explicitly starts a new one.
+- **Semantic memory.** After each turn, a second cheap LLM call extracts
+  durable facts/preferences worth remembering (ignoring transient chatter)
+  into `memories`, keyed by `(userId, key)` so restating a fact updates the
+  existing row instead of creating a duplicate — the extractor is shown the
+  user's existing keys specifically to make this dedup work. The top facts
+  by importance are injected into the system prompt on every turn.
+- **Tool permission layer.** `apps/worker/src/agent/permissions.ts` maps
+  every tool to an `auto` or `confirm` policy (unlisted tools default to
+  `confirm`). The 5 current tools are all `auto` (read/low-risk task and
+  reminder actions). A `confirm`-policy tool call is intercepted before
+  execution: it's recorded in `approval_requests` instead of running, and the
+  model is told to ask the user; a `confirmAction`/`rejectAction` tool call
+  on a later turn executes or discards it. No current tool needs this yet —
+  it's infrastructure for when a destructive/external tool (delete, send
+  email, Notion write) is added later.
 
 ## Deliberately deferred
 
