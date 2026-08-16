@@ -1,4 +1,4 @@
-import { and, eq, lte, or, sql } from "drizzle-orm";
+import { and, eq, lte, or } from "drizzle-orm";
 import { schema, type Database } from "@persona/db";
 import type { NotificationChannel } from "@persona/integrations";
 import { computeNextOccurrence } from "./rrule.js";
@@ -45,14 +45,12 @@ async function claimDueReminders(db: Database): Promise<number> {
   const now = new Date();
 
   return db.transaction(async (tx) => {
-    const due = await tx.execute(sql`
-      SELECT * FROM ${schema.reminders}
-      WHERE ${schema.reminders.status} = 'active'
-        AND ${schema.reminders.nextRunAt} <= ${now}
-      FOR UPDATE SKIP LOCKED
-    `);
+    const rows = await tx
+      .select()
+      .from(schema.reminders)
+      .where(and(eq(schema.reminders.status, "active"), lte(schema.reminders.nextRunAt, now)))
+      .for("update", { skipLocked: true });
 
-    const rows = due.rows as unknown as (typeof schema.reminders.$inferSelect)[];
     let claimed = 0;
 
     for (const reminder of rows) {
@@ -114,15 +112,13 @@ async function dispatchOutbox(
   const lease = new Date(now.getTime() + LEASE_DURATION_MS);
 
   const claimedRows = await db.transaction(async (tx) => {
-    const pending = await tx.execute(sql`
-      SELECT * FROM ${schema.outbox}
-      WHERE ${schema.outbox.status} = 'pending'
-        AND ${schema.outbox.availableAt} <= ${now}
-      FOR UPDATE SKIP LOCKED
-      LIMIT 50
-    `);
+    const rows = await tx
+      .select()
+      .from(schema.outbox)
+      .where(and(eq(schema.outbox.status, "pending"), lte(schema.outbox.availableAt, now)))
+      .limit(50)
+      .for("update", { skipLocked: true });
 
-    const rows = pending.rows as unknown as (typeof schema.outbox.$inferSelect)[];
     if (rows.length === 0) return [];
 
     await tx
