@@ -1,3 +1,4 @@
+import { z } from "zod";
 import {
   completeTaskInputSchema,
   createReminderInputSchema,
@@ -7,8 +8,13 @@ import {
   type ReminderService,
   type TaskService,
 } from "@persona/core";
+import type { Database } from "@persona/db";
 import type { ChatCompletionTool } from "openai/resources/index.js";
 import { zodToJsonSchema } from "zod-to-json-schema";
+import { resolveApproval } from "./approvals.js";
+
+const confirmActionInputSchema = z.object({ approvalId: z.string().uuid() });
+const rejectActionInputSchema = z.object({ approvalId: z.string().uuid() });
 
 export function buildToolDefinitions(): ChatCompletionTool[] {
   return [
@@ -53,11 +59,29 @@ export function buildToolDefinitions(): ChatCompletionTool[] {
         parameters: zodToJsonSchema(createReminderInputSchema) as Record<string, unknown>,
       },
     },
+    {
+      type: "function",
+      function: {
+        name: "confirmAction",
+        description:
+          "Confirm and execute a previously requested action that is pending the user's approval.",
+        parameters: zodToJsonSchema(confirmActionInputSchema) as Record<string, unknown>,
+      },
+    },
+    {
+      type: "function",
+      function: {
+        name: "rejectAction",
+        description: "Decline a previously requested action that is pending the user's approval.",
+        parameters: zodToJsonSchema(rejectActionInputSchema) as Record<string, unknown>,
+      },
+    },
   ];
 }
 
 export interface ToolContext {
   userId: string;
+  db: Database;
   taskService: TaskService;
   reminderService: ReminderService;
 }
@@ -87,6 +111,18 @@ export async function executeTool(
     case "createReminder": {
       const input = createReminderInputSchema.parse(rawArgs);
       return ctx.reminderService.createReminder(ctx.userId, input);
+    }
+    case "confirmAction": {
+      const { approvalId } = confirmActionInputSchema.parse(rawArgs);
+      const approval = await resolveApproval(ctx.db, approvalId, ctx.userId, "approved");
+      if (!approval) return { error: "No matching pending approval found." };
+      return executeTool(approval.action, approval.payload, ctx);
+    }
+    case "rejectAction": {
+      const { approvalId } = rejectActionInputSchema.parse(rawArgs);
+      const approval = await resolveApproval(ctx.db, approvalId, ctx.userId, "rejected");
+      if (!approval) return { error: "No matching pending approval found." };
+      return { status: "rejected", approvalId };
     }
     default:
       throw new Error(`Unknown tool: ${name}`);

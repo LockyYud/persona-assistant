@@ -1,4 +1,3 @@
-import { randomUUID } from "node:crypto";
 import OpenAI from "openai";
 import type { ChatCompletionMessageParam } from "openai/resources/index.js";
 import { schema, type Database } from "@persona/db";
@@ -11,10 +10,27 @@ import type {
   TriggeredWorkflowInput,
 } from "@persona/core";
 import { buildToolDefinitions, executeTool } from "./tools.js";
+import { getToolPolicy } from "./permissions.js";
+import { createApprovalRequest } from "./approvals.js";
+import { extractMemoryCandidates } from "../memory/extractor.js";
+import {
+  appendMessage,
+  getPendingApproval,
+  listMemoryKeys,
+  loadRecentMessages,
+  loadTopMemories,
+  resolveConversationId,
+  touchMemoriesLastUsed,
+  upsertMemory,
+} from "../memory/repository.js";
 
-const SYSTEM_PROMPT = `You are Duy's personal assistant. You can create and manage tasks and
-reminders on his behalf using the provided tools. Always confirm what you did in plain,
-concise language. Times you pass to tools must be ISO-8601 UTC datetimes.`;
+const BASE_SYSTEM_PROMPT = `You are Duy's personal assistant. You can create and manage tasks
+and reminders on his behalf using the provided tools. Always confirm what you did in plain,
+concise language. Times you pass to tools must be ISO-8601 UTC datetimes.
+
+Some actions require the user's explicit confirmation before they run. When a tool result says
+an action is pending confirmation, tell the user what it would do and ask them to confirm. Only
+call confirmAction or rejectAction once the user has clearly responded to that specific ask.`;
 
 const MAX_TOOL_ITERATIONS = 5;
 
@@ -53,11 +69,20 @@ export class OpenAICompatibleAgentAdapter implements AgentRuntime {
   }
 
   async chat(input: ChatMessageInput): Promise<ChatResult> {
-    const conversationId = input.conversationId ?? randomUUID();
+    const conversationId = await resolveConversationId(this.db, input.userId, input.conversationId);
+
+    const history = await loadRecentMessages(this.db, conversationId);
+    const memories = await loadTopMemories(this.db, input.userId);
+    const pendingApproval = await getPendingApproval(this.db, input.userId);
+
     const messages: ChatCompletionMessageParam[] = [
-      { role: "system", content: SYSTEM_PROMPT },
+      { role: "system", content: buildSystemPrompt(memories, pendingApproval) },
+      ...history,
       { role: "user", content: input.message },
     ];
+    // Everything from here on is new this turn (assistant/tool messages the
+    // loop below appends) — used to know what to persist afterwards.
+    const turnStartIndex = messages.length;
 
     const toolCalls: ChatResult["toolCalls"] = [];
     let promptTokens = 0;
@@ -89,16 +114,7 @@ export class OpenAICompatibleAgentAdapter implements AgentRuntime {
 
         for (const call of message.tool_calls) {
           const args = call.function.arguments ? JSON.parse(call.function.arguments) : {};
-          let output: unknown;
-          try {
-            output = await executeTool(call.function.name, args, {
-              userId: input.userId,
-              taskService: this.taskService,
-              reminderService: this.reminderService,
-            });
-          } catch (toolError) {
-            output = { error: toolError instanceof Error ? toolError.message : String(toolError) };
-          }
+          const output = await this.runTool(call.function.name, args, input.userId);
 
           toolCalls.push({ name: call.function.name, input: args, output });
           messages.push({
@@ -111,6 +127,8 @@ export class OpenAICompatibleAgentAdapter implements AgentRuntime {
     } catch (runError) {
       error = runError instanceof Error ? runError.message : String(runError);
     }
+
+    const finalReply = error ? "Sorry, something went wrong processing that." : reply;
 
     const [agentRun] = await this.db
       .insert(schema.agentRuns)
@@ -125,12 +143,119 @@ export class OpenAICompatibleAgentAdapter implements AgentRuntime {
       })
       .returning({ id: schema.agentRuns.id });
 
+    if (!error) {
+      await this.persistTurn(
+        conversationId,
+        input.userId,
+        input.message,
+        messages.slice(turnStartIndex),
+        memories,
+      );
+    }
+
     return {
       conversationId,
-      reply: error ? "Sorry, something went wrong processing that." : reply,
+      reply: finalReply,
       toolCalls,
       agentRunId: agentRun?.id ?? "",
     };
+  }
+
+  private async runTool(name: string, args: unknown, userId: string): Promise<unknown> {
+    const policy = getToolPolicy(name);
+
+    if (policy === "confirm") {
+      const approval = await createApprovalRequest(this.db, {
+        userId,
+        agentRunId: null,
+        action: name,
+        payload: args,
+      });
+      return {
+        status: "pending_confirmation",
+        approvalId: approval.id,
+        message: `This action (${name}) requires your confirmation before it runs.`,
+      };
+    }
+
+    try {
+      return await executeTool(name, args, {
+        userId,
+        db: this.db,
+        taskService: this.taskService,
+        reminderService: this.reminderService,
+      });
+    } catch (toolError) {
+      return { error: toolError instanceof Error ? toolError.message : String(toolError) };
+    }
+  }
+
+  /**
+   * Persists the user's message plus every assistant/tool message the loop
+   * produced this turn, extracts any durable facts worth remembering, and
+   * marks the memories that informed this turn as recently used.
+   */
+  private async persistTurn(
+    conversationId: string,
+    userId: string,
+    userMessage: string,
+    newMessages: ChatCompletionMessageParam[],
+    memoriesUsed: (typeof schema.memories.$inferSelect)[],
+  ): Promise<void> {
+    await appendMessage(this.db, {
+      conversationId,
+      userId,
+      role: "user",
+      content: userMessage,
+    });
+
+    for (const message of newMessages) {
+      if (message.role === "assistant") {
+        await appendMessage(this.db, {
+          conversationId,
+          userId,
+          role: "assistant",
+          content: typeof message.content === "string" ? message.content : null,
+          toolCalls: message.tool_calls ?? undefined,
+        });
+      } else if (message.role === "tool") {
+        await appendMessage(this.db, {
+          conversationId,
+          userId,
+          role: "tool",
+          content:
+            typeof message.content === "string" ? message.content : JSON.stringify(message.content),
+          toolCallId: message.tool_call_id,
+        });
+      }
+    }
+
+    if (memoriesUsed.length > 0) {
+      await touchMemoriesLastUsed(
+        this.db,
+        memoriesUsed.map((m) => m.id),
+      );
+    }
+
+    const assistantReplyText = [...newMessages]
+      .reverse()
+      .find((m) => m.role === "assistant" && typeof m.content === "string");
+    const replyText =
+      assistantReplyText?.role === "assistant" && typeof assistantReplyText.content === "string"
+        ? assistantReplyText.content
+        : "";
+
+    const existingKeys = await listMemoryKeys(this.db, userId);
+    const candidates = await extractMemoryCandidates(
+      this.client,
+      this.model,
+      userMessage,
+      replyText,
+      existingKeys,
+    );
+    for (const candidate of candidates) {
+      await upsertMemory(this.db, userId, candidate, "conversation");
+    }
   }
 
   async runTriggeredWorkflow(_input: TriggeredWorkflowInput): Promise<void> {
@@ -138,4 +263,26 @@ export class OpenAICompatibleAgentAdapter implements AgentRuntime {
     // outbox/Telegram path, not through the LLM.
     return;
   }
+}
+
+function buildSystemPrompt(
+  memories: (typeof schema.memories.$inferSelect)[],
+  pendingApproval: (typeof schema.approvalRequests.$inferSelect) | null,
+): string {
+  const sections = [BASE_SYSTEM_PROMPT];
+
+  if (memories.length > 0) {
+    const facts = memories.map((m) => `- (${m.type}) ${m.content}`).join("\n");
+    sections.push(`Known context about the user:\n${facts}`);
+  }
+
+  if (pendingApproval) {
+    sections.push(
+      `There is a pending action awaiting confirmation: action="${pendingApproval.action}" ` +
+        `payload=${JSON.stringify(pendingApproval.payload)} approvalId="${pendingApproval.id}". ` +
+        `If the user's message confirms it, call confirmAction with this approvalId. If they decline, call rejectAction.`,
+    );
+  }
+
+  return sections.join("\n\n");
 }

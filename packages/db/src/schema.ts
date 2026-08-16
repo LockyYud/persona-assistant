@@ -1,5 +1,6 @@
 import { sql } from "drizzle-orm";
 import {
+  index,
   integer,
   jsonb,
   pgTable,
@@ -117,6 +118,52 @@ export const notificationDeliveries = pgTable(
   }),
 );
 
+export const conversationMessages = pgTable(
+  "conversation_messages",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    conversationId: uuid("conversation_id").notNull(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    role: text("role", { enum: ["user", "assistant", "tool"] }).notNull(),
+    content: text("content"),
+    // Raw OpenAI-shaped tool_calls array on an assistant message, if any.
+    toolCalls: jsonb("tool_calls"),
+    // Set on tool-role messages; must match the id in the assistant message's toolCalls.
+    toolCallId: text("tool_call_id"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    conversationCreatedIdx: index("conversation_messages_conversation_created_idx").on(
+      table.conversationId,
+      table.createdAt,
+    ),
+  }),
+);
+
+export const memories = pgTable(
+  "memories",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    type: text("type", { enum: ["preference", "fact", "episodic"] }).notNull(),
+    key: text("key").notNull(),
+    content: text("content").notNull(),
+    importance: integer("importance").notNull().default(50),
+    confidence: integer("confidence").notNull().default(80),
+    source: text("source"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+    lastUsedAt: timestamp("last_used_at", { withTimezone: true }),
+  },
+  (table) => ({
+    userKeyUnique: uniqueIndex("memories_user_key_idx").on(table.userId, table.key),
+  }),
+);
+
 export const agentRuns = pgTable("agent_runs", {
   id: uuid("id").primaryKey().defaultRandom(),
   userId: uuid("user_id")
@@ -131,7 +178,6 @@ export const agentRuns = pgTable("agent_runs", {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
-// Phase 2 placeholder: not read/written by MVP code paths.
 export const approvalRequests = pgTable("approval_requests", {
   id: uuid("id").primaryKey().defaultRandom(),
   userId: uuid("user_id")
