@@ -9,8 +9,8 @@ root for the full plan this implements.
 - `apps/web` — Next.js App Router, Auth.js Google OAuth (single allowlisted
   email), chat + tasks UI, BFF routes that call the worker with a shared secret.
 - `apps/worker` — Fastify API: `/chat`, `/tasks`, `/tasks/:taskId`,
-  `/internal/tick`, `/health`, `/users/me`. Owns the DeepSeek Harness adapter,
-  task/reminder services, and the outbox/scheduler tick logic.
+  `/internal/tick`, `/health`, `/users/me`. Owns the LLM adapter, task/reminder
+  services, and the outbox/scheduler tick logic.
 - `apps/scheduler-lambda` — Lambda invoked every minute by EventBridge
   Scheduler; HMAC-signs an empty body and calls `/internal/tick`.
 - `packages/core` — domain types, Zod schemas, `TaskService`/`ReminderService`/
@@ -22,7 +22,7 @@ root for the full plan this implements.
 
 ```bash
 pnpm install
-cp .env.example .env   # fill in DATABASE_URL, secrets, Google/Telegram/DeepSeek keys
+cp .env.example .env   # fill in DATABASE_URL, secrets, Google/Telegram/LLM keys
 pnpm --filter @persona/db generate   # already run once; re-run after schema changes
 pnpm --filter @persona/db migrate    # applies packages/db/drizzle/*.sql to Neon
 pnpm --filter @persona/worker seed   # inserts the allowlisted user row
@@ -42,19 +42,21 @@ pnpm dev:web      # http://localhost:3000
   backoff up to 5 attempts, RRULE-based `next_run_at` recomputation.
 - HMAC-signed `/internal/tick` with timestamp skew check and raw-body
   signature verification (custom content-type parser preserves exact bytes).
-- `DeepSeekHarnessAdapter` implementing the runtime-agnostic `AgentRuntime`
-  interface via DeepSeek's OpenAI-compatible Chat Completions API with the
-  five MVP tools. Reminders are delivered deterministically through the
-  outbox, never through the LLM.
+- `OpenAICompatibleAgentAdapter` implementing the runtime-agnostic
+  `AgentRuntime` interface via any OpenAI-compatible Chat Completions API
+  (OpenAI, DeepSeek, Gemini's OpenAI-compat endpoint, OpenRouter, ...),
+  configured purely through `LLM_API_KEY` / `LLM_BASE_URL` / `LLM_MODEL` env
+  vars — switching providers is a config change, not a code change. Reminders
+  are delivered deterministically through the outbox, never through the LLM.
 - Google OAuth with single-email allowlist enforced in the `signIn` callback
   and route `middleware.ts`.
 
 ## Deliberately deferred
 
-- **Pinned DeepSeek Harness package.** This environment has no access to pull
-  and pin the official Harness repo by commit. `DeepSeekHarnessAdapter` is
-  written so only its internals change when that dependency is vendored — the
-  `AgentRuntime` contract, tool set, and callers stay the same.
+- **A native Anthropic (Messages API) adapter.** The current adapter only
+  covers OpenAI-compatible wire formats. Anthropic's API shape differs enough
+  that it needs its own `AgentRuntime` implementation, not a config flag on
+  `OpenAICompatibleAgentAdapter`.
 - **Infra provisioning** (Neon project, Render service, Vercel project,
   EventBridge Scheduler + Lambda + SQS DLQ, secret storage) — needs your cloud
   credentials; not something to script blind.

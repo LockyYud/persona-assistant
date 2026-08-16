@@ -18,23 +18,38 @@ concise language. Times you pass to tools must be ISO-8601 UTC datetimes.`;
 
 const MAX_TOOL_ITERATIONS = 5;
 
+export interface LlmProviderConfig {
+  apiKey: string;
+  baseURL?: string;
+  model: string;
+}
+
 /**
- * Thin adapter over the DeepSeek Harness runtime. Swap the OpenAI-compatible
- * client below for the pinned Harness SDK once that dependency is vendored;
- * the AgentRuntime contract and tool set are what the rest of the app relies on.
+ * Thin adapter over any OpenAI-compatible chat completions API (OpenAI,
+ * DeepSeek, Gemini's OpenAI-compat endpoint, OpenRouter, local vLLM, ...).
+ * apiKey/baseURL/model are runtime config, not hardcoded, so switching
+ * providers is an env var change. The rest of the app only depends on the
+ * AgentRuntime contract and tool set, never on this class directly.
+ *
+ * A provider with a genuinely different wire format (e.g. native Anthropic
+ * Messages API) needs its own AgentRuntime implementation instead of reusing
+ * this one.
  */
-export class DeepSeekHarnessAdapter implements AgentRuntime {
+export class OpenAICompatibleAgentAdapter implements AgentRuntime {
   private readonly client: OpenAI;
   private readonly tools = buildToolDefinitions();
+  private readonly model: string;
+  private readonly runtimeLabel: string;
 
   constructor(
     private readonly db: Database,
     private readonly taskService: TaskService,
     private readonly reminderService: ReminderService,
-    apiKey: string,
-    private readonly model: string,
+    provider: LlmProviderConfig,
   ) {
-    this.client = new OpenAI({ apiKey, baseURL: "https://api.deepseek.com" });
+    this.client = new OpenAI({ apiKey: provider.apiKey, baseURL: provider.baseURL });
+    this.model = provider.model;
+    this.runtimeLabel = provider.baseURL ?? "openai";
   }
 
   async chat(input: ChatMessageInput): Promise<ChatResult> {
@@ -101,7 +116,7 @@ export class DeepSeekHarnessAdapter implements AgentRuntime {
       .insert(schema.agentRuns)
       .values({
         userId: input.userId,
-        runtime: "deepseek-harness",
+        runtime: this.runtimeLabel,
         model: this.model,
         promptTokens,
         completionTokens,

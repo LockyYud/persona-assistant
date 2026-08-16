@@ -6,7 +6,7 @@ import { chatInputSchema, createTaskInputSchema, updateTaskInputSchema } from "@
 import { config } from "./config.js";
 import { DrizzleTaskService } from "./services/task-service.js";
 import { DrizzleReminderService } from "./services/reminder-service.js";
-import { DeepSeekHarnessAdapter } from "./agent/deepseek-harness-adapter.js";
+import { OpenAICompatibleAgentAdapter } from "./agent/openai-compatible-adapter.js";
 import { verifyTickSignature } from "./auth/internal-signature.js";
 import { runTick } from "./scheduler/tick.js";
 import { makeChatIdResolver } from "./scheduler/chat-id-resolver.js";
@@ -34,13 +34,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
 
   const taskService = new DrizzleTaskService(db);
   const reminderService = new DrizzleReminderService(db);
-  const agentRuntime = new DeepSeekHarnessAdapter(
-    db,
-    taskService,
-    reminderService,
-    config.deepseekApiKey,
-    config.deepseekModel,
-  );
+  const agentRuntime = new OpenAICompatibleAgentAdapter(db, taskService, reminderService, config.llm);
   const notificationChannel = new TelegramNotificationChannel(config.telegramBotToken);
   const resolveChatId = makeChatIdResolver(db);
 

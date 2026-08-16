@@ -12,6 +12,9 @@ export const config = {
   internalHmacSecret: required("WORKER_INTERNAL_HMAC_SECRET"),
   bffSharedSecret: required("WORKER_BFF_SHARED_SECRET"),
   telegramBotToken: process.env.TELEGRAM_BOT_TOKEN ?? "",
-  deepseekApiKey: process.env.DEEPSEEK_API_KEY ?? "",
-  deepseekModel: process.env.DEEPSEEK_HARNESS_MODEL ?? "deepseek-chat",
+  llm: {
+    apiKey: required("LLM_API_KEY"),
+    baseURL: process.env.LLM_BASE_URL || undefined,
+    model: required("LLM_MODEL"),
+  },
 };
