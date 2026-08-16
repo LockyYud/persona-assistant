@@ -1,4 +1,9 @@
-import { RRule } from "rrule";
+import rrulePkg from "rrule";
+
+// rrule ships as CommonJS; Node's ESM interop only exposes it as the default
+// export (cjs-module-lexer can't statically detect its named exports), so we
+// have to destructure at runtime instead of using a named import.
+const { RRule } = rrulePkg;
 
 /**
  * Computes the next occurrence strictly after `after`, interpreting the RRULE
