@@ -1,0 +1,32 @@
+{
+  "name": "@persona/worker",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/server.ts",
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/server.js",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "seed": "tsx src/scripts/seed.ts",
+    "telegram:onboard": "tsx src/scripts/telegram-onboarding.ts"
+  },
+  "dependencies": {
+    "@persona/core": "workspace:*",
+    "@persona/db": "workspace:*",
+    "@persona/integrations": "workspace:*",
+    "drizzle-orm": "^0.36.1",
+    "fastify": "^5.1.0",
+    "openai": "^4.68.4",
+    "rrule": "^2.8.1",
+    "zod": "^3.23.8",
+    "zod-to-json-schema": "^3.23.5"
+  },
+  "devDependencies": {
+    "@types/node": "^22.9.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.6.3",
+    "vitest": "^2.1.4"
+  }
+}
