@@ -1,8 +1,8 @@
 # Persona Assistant
 
-Single-user MVP: web chat (Next.js/Vercel), worker/agent (Fastify/Render), Neon
-Postgres, Telegram delivery-only notifications. See the strategy doc in the repo
-root for the full plan this implements.
+Single-user MVP: web chat (Next.js/Vercel), worker/agent (Fastify/Render),
+Postgres (Supabase), Telegram delivery-only notifications. See the strategy
+doc in the repo root for the full plan this implements.
 
 ## Layout
 
@@ -15,7 +15,8 @@ root for the full plan this implements.
   Scheduler; HMAC-signs an empty body and calls `/internal/tick`.
 - `packages/core` — domain types, Zod schemas, `TaskService`/`ReminderService`/
   `AgentRuntime` interfaces.
-- `packages/db` — Drizzle schema + migrations against Neon Postgres.
+- `packages/db` — Drizzle schema + migrations, via `pg` (works against
+  Supabase, Neon, Render Postgres, or any standard Postgres host).
 - `packages/integrations` — Telegram Bot API client + onboarding helper.
 
 ## Getting started
@@ -24,7 +25,7 @@ root for the full plan this implements.
 pnpm install
 cp .env.example .env   # fill in DATABASE_URL, secrets, Google/Telegram/LLM keys
 pnpm --filter @persona/db generate   # already run once; re-run after schema changes
-pnpm --filter @persona/db migrate    # applies packages/db/drizzle/*.sql to Neon
+pnpm --filter @persona/db migrate    # applies packages/db/drizzle/*.sql to DATABASE_URL
 pnpm --filter @persona/worker seed   # inserts the allowlisted user row
 pnpm --filter @persona/worker telegram:onboard -- duy.dm@teko.vn  # links Telegram chat_id
 
@@ -57,9 +58,11 @@ pnpm dev:web      # http://localhost:3000
   covers OpenAI-compatible wire formats. Anthropic's API shape differs enough
   that it needs its own `AgentRuntime` implementation, not a config flag on
   `OpenAICompatibleAgentAdapter`.
-- **Infra provisioning** (Neon project, Render service, Vercel project,
-  EventBridge Scheduler + Lambda + SQS DLQ, secret storage) — needs your cloud
-  credentials; not something to script blind.
+- **Infra provisioning** (Render service, Vercel project, EventBridge
+  Scheduler + Lambda + SQS DLQ, secret storage) — needs your cloud
+  credentials; not something to script blind. Supabase Postgres is already
+  provisioned (project `persona-assistant`, region `ap-southeast-1`),
+  migrated, and seeded.
 - Deeper observability (structured `request_id`/`agent_run_id`/`trigger_run_id`
   correlation across logs, alerting on DLQ/outbox-failed) beyond the
   `agent_runs` audit table and Fastify's default request logging.
