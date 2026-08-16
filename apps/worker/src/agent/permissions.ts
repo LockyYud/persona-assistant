@@ -14,8 +14,6 @@ const TOOL_POLICIES: Record<string, ToolPolicy> = {
   updateTask: "auto",
   completeTask: "auto",
   createReminder: "auto",
-  confirmAction: "auto",
-  rejectAction: "auto",
 };
 
 export function getToolPolicy(toolName: string): ToolPolicy {

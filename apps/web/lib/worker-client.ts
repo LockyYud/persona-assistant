@@ -50,3 +50,14 @@ export async function createTask(userId: string, input: Record<string, unknown>)
     body: JSON.stringify({ userId, ...input }),
   });
 }
+
+export async function decideApproval(
+  userId: string,
+  approvalId: string,
+  decision: "approved" | "rejected",
+) {
+  return workerFetch(`/approvals/${encodeURIComponent(approvalId)}/decision`, {
+    method: "POST",
+    body: JSON.stringify({ userId, decision }),
+  });
+}

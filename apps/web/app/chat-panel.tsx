@@ -2,9 +2,17 @@
 
 import { useState } from "react";
 
+interface PendingApproval {
+  approvalId: string;
+  action: string;
+  payload: unknown;
+}
+
 interface ChatEntry {
   role: "user" | "assistant";
   text: string;
+  pendingApproval?: PendingApproval;
+  resolved?: "approved" | "rejected";
 }
 
 export function ChatPanel() {
@@ -29,11 +37,35 @@ export function ChatPanel() {
       });
       const data = await response.json();
       setConversationId(data.conversationId);
-      setEntries((prev) => [...prev, { role: "assistant", text: data.reply ?? "(no reply)" }]);
+      setEntries((prev) => [
+        ...prev,
+        {
+          role: "assistant",
+          text: data.reply ?? "(no reply)",
+          pendingApproval: data.pendingApproval ?? undefined,
+        },
+      ]);
     } catch {
       setEntries((prev) => [...prev, { role: "assistant", text: "Error sending message." }]);
     } finally {
       setPending(false);
+    }
+  }
+
+  async function decide(entryIndex: number, decision: "approved" | "rejected") {
+    const approval = entries[entryIndex]?.pendingApproval;
+    if (!approval) return;
+
+    try {
+      await fetch("/api/approvals", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ approvalId: approval.approvalId, decision }),
+      });
+    } finally {
+      setEntries((prev) =>
+        prev.map((entry, index) => (index === entryIndex ? { ...entry, resolved: decision } : entry)),
+      );
     }
   }
 
@@ -64,6 +96,19 @@ export function ChatPanel() {
             >
               {entry.text}
             </span>
+            {entry.pendingApproval && !entry.resolved && (
+              <div style={{ marginTop: "0.4rem" }}>
+                <button onClick={() => decide(index, "approved")} style={{ marginRight: "0.5rem" }}>
+                  ✅ Xác nhận
+                </button>
+                <button onClick={() => decide(index, "rejected")}>❌ Huỷ</button>
+              </div>
+            )}
+            {entry.resolved && (
+              <div style={{ marginTop: "0.25rem", fontSize: "0.85rem", color: "#666" }}>
+                {entry.resolved === "approved" ? "Đã xác nhận." : "Đã huỷ."}
+              </div>
+            )}
           </div>
         ))}
       </div>

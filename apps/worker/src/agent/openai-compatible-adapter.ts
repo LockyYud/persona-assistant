@@ -5,6 +5,7 @@ import type {
   AgentRuntime,
   ChatMessageInput,
   ChatResult,
+  PendingApproval,
   ReminderService,
   TaskService,
   TriggeredWorkflowInput,
@@ -29,8 +30,9 @@ and reminders on his behalf using the provided tools. Always confirm what you di
 concise language. Times you pass to tools must be ISO-8601 UTC datetimes.
 
 Some actions require the user's explicit confirmation before they run. When a tool result says
-an action is pending confirmation, tell the user what it would do and ask them to confirm. Only
-call confirmAction or rejectAction once the user has clearly responded to that specific ask.`;
+an action is pending confirmation, tell the user what it would do and that a Confirm/Cancel
+button has been shown to them. You cannot confirm or cancel it yourself — only the user's own
+button press does that.`;
 
 const MAX_TOOL_ITERATIONS = 5;
 
@@ -153,11 +155,14 @@ export class OpenAICompatibleAgentAdapter implements AgentRuntime {
       );
     }
 
+    const newPendingApproval = extractPendingApproval(toolCalls);
+
     return {
       conversationId,
       reply: finalReply,
       toolCalls,
       agentRunId: agentRun?.id ?? "",
+      pendingApproval: newPendingApproval,
     };
   }
 
@@ -265,6 +270,16 @@ export class OpenAICompatibleAgentAdapter implements AgentRuntime {
   }
 }
 
+function extractPendingApproval(toolCalls: ChatResult["toolCalls"]): PendingApproval | null {
+  for (const call of toolCalls) {
+    const output = call.output as { status?: string; approvalId?: string } | null;
+    if (output && output.status === "pending_confirmation" && output.approvalId) {
+      return { approvalId: output.approvalId, action: call.name, payload: call.input };
+    }
+  }
+  return null;
+}
+
 function buildSystemPrompt(
   memories: (typeof schema.memories.$inferSelect)[],
   pendingApproval: (typeof schema.approvalRequests.$inferSelect) | null,
@@ -278,9 +293,9 @@ function buildSystemPrompt(
 
   if (pendingApproval) {
     sections.push(
-      `There is a pending action awaiting confirmation: action="${pendingApproval.action}" ` +
-        `payload=${JSON.stringify(pendingApproval.payload)} approvalId="${pendingApproval.id}". ` +
-        `If the user's message confirms it, call confirmAction with this approvalId. If they decline, call rejectAction.`,
+      `There is a pending action awaiting the user's confirmation via a button you already ` +
+        `showed them: action="${pendingApproval.action}" payload=${JSON.stringify(pendingApproval.payload)}. ` +
+        `You cannot confirm or cancel it yourself — if the user asks about it, remind them to use the button.`,
     );
   }
 

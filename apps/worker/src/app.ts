@@ -7,6 +7,8 @@ import { config } from "./config.js";
 import { DrizzleTaskService } from "./services/task-service.js";
 import { DrizzleReminderService } from "./services/reminder-service.js";
 import { OpenAICompatibleAgentAdapter } from "./agent/openai-compatible-adapter.js";
+import { executeTool } from "./agent/tools.js";
+import { resolveApproval } from "./agent/approvals.js";
 import { verifyTickSignature } from "./auth/internal-signature.js";
 import { runTick } from "./scheduler/tick.js";
 import { makeChatIdResolver } from "./scheduler/chat-id-resolver.js";
@@ -37,6 +39,30 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   const agentRuntime = new OpenAICompatibleAgentAdapter(db, taskService, reminderService, config.llm);
   const notificationChannel = new TelegramNotificationChannel(config.telegramBotToken);
   const resolveChatId = makeChatIdResolver(db);
+
+  /**
+   * The only place a pending approval actually moves forward. Called from a
+   * real user-originated signal (Telegram button callback, web button) —
+   * never from the model.
+   */
+  async function decideApproval(
+    userId: string,
+    approvalId: string,
+    decision: "approved" | "rejected",
+  ): Promise<{ ok: true; result: unknown } | { ok: false; error: string }> {
+    const approval = await resolveApproval(db, approvalId, userId, decision);
+    if (!approval) return { ok: false, error: "No matching pending approval found." };
+
+    if (decision === "rejected") return { ok: true, result: { status: "rejected" } };
+
+    const result = await executeTool(approval.action, approval.payload, {
+      userId,
+      db,
+      taskService,
+      reminderService,
+    });
+    return { ok: true, result };
+  }
 
   app.addHook("onRequest", async (request, reply) => {
     if (
@@ -111,11 +137,71 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   );
 
   app.post<{
-    Body: { message?: { chat: { id: number }; text?: string } };
+    Params: { approvalId: string };
+    Body: { userId: string; decision: "approved" | "rejected" };
+  }>("/approvals/:approvalId/decision", async (request, reply) => {
+    const { userId, decision } = request.body;
+    if (!userId || (decision !== "approved" && decision !== "rejected")) {
+      return reply.code(400).send({ error: "userId and decision ('approved'|'rejected') are required" });
+    }
+
+    const outcome = await decideApproval(userId, request.params.approvalId, decision);
+    if (!outcome.ok) return reply.code(404).send({ error: outcome.error });
+
+    return { decision, result: outcome.result };
+  });
+
+  app.post<{
+    Body: {
+      message?: { chat: { id: number }; text?: string };
+      callback_query?: {
+        id: string;
+        message?: { message_id: number; chat: { id: number } };
+        data?: string;
+      };
+    };
   }>("/telegram/webhook", async (request, reply) => {
     const secretHeader = request.headers["x-telegram-bot-api-secret-token"];
     if (!config.telegramWebhookSecret || secretHeader !== config.telegramWebhookSecret) {
       return reply.code(401).send({ error: "invalid webhook secret" });
+    }
+
+    const callback = request.body?.callback_query;
+    if (callback) {
+      const chatId = callback.message?.chat?.id;
+      const messageId = callback.message?.message_id;
+      const [, approvalId, decisionWord] = callback.data?.split(":") ?? [];
+
+      if (chatId === undefined || !approvalId || (decisionWord !== "approve" && decisionWord !== "reject")) {
+        await notificationChannel.answerCallbackQuery(callback.id);
+        return reply.code(200).send({ ok: true });
+      }
+
+      const [user] = await db
+        .select()
+        .from(schema.users)
+        .where(eq(schema.users.telegramChatId, String(chatId)));
+
+      if (!user) {
+        await notificationChannel.answerCallbackQuery(callback.id, "Not linked to an account.");
+        return reply.code(200).send({ ok: true });
+      }
+
+      const decision = decisionWord === "approve" ? "approved" : "rejected";
+      const outcome = await decideApproval(user.id, approvalId, decision);
+
+      const resultText = !outcome.ok
+        ? `⚠️ ${outcome.error}`
+        : decision === "approved"
+          ? "✅ Đã xác nhận và thực hiện."
+          : "❌ Đã huỷ.";
+
+      await notificationChannel.answerCallbackQuery(callback.id);
+      if (messageId !== undefined) {
+        await notificationChannel.editMessageText(String(chatId), messageId, resultText);
+      }
+
+      return reply.code(200).send({ ok: true });
     }
 
     const message = request.body?.message;
@@ -140,7 +226,15 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     }
 
     const result = await agentRuntime.chat({ userId: user.id, message: text });
-    await notificationChannel.send({ chatId: String(chatId), text: result.reply });
+
+    if (result.pendingApproval) {
+      await notificationChannel.sendWithApprovalButtons(
+        { chatId: String(chatId), text: result.reply },
+        { approvalId: result.pendingApproval.approvalId },
+      );
+    } else {
+      await notificationChannel.send({ chatId: String(chatId), text: result.reply });
+    }
 
     return reply.code(200).send({ ok: true });
   });
