@@ -39,7 +39,13 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   const resolveChatId = makeChatIdResolver(db);
 
   app.addHook("onRequest", async (request, reply) => {
-    if (request.url.startsWith("/internal/") || request.url === "/health") return;
+    if (
+      request.url.startsWith("/internal/") ||
+      request.url.startsWith("/telegram/") ||
+      request.url === "/health"
+    ) {
+      return;
+    }
 
     const authHeader = request.headers.authorization;
     if (authHeader !== `Bearer ${config.bffSharedSecret}`) {
@@ -103,6 +109,41 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       return { task };
     },
   );
+
+  app.post<{
+    Body: { message?: { chat: { id: number }; text?: string } };
+  }>("/telegram/webhook", async (request, reply) => {
+    const secretHeader = request.headers["x-telegram-bot-api-secret-token"];
+    if (!config.telegramWebhookSecret || secretHeader !== config.telegramWebhookSecret) {
+      return reply.code(401).send({ error: "invalid webhook secret" });
+    }
+
+    const message = request.body?.message;
+    const text = message?.text;
+    const chatId = message?.chat?.id;
+
+    if (!text || chatId === undefined) {
+      return reply.code(200).send({ ok: true });
+    }
+
+    const [user] = await db
+      .select()
+      .from(schema.users)
+      .where(eq(schema.users.telegramChatId, String(chatId)));
+
+    if (!user) {
+      await notificationChannel.send({
+        chatId: String(chatId),
+        text: "This bot is private and not linked to your account.",
+      });
+      return reply.code(200).send({ ok: true });
+    }
+
+    const result = await agentRuntime.chat({ userId: user.id, message: text });
+    await notificationChannel.send({ chatId: String(chatId), text: result.reply });
+
+    return reply.code(200).send({ ok: true });
+  });
 
   app.post("/internal/tick", async (request, reply) => {
     const rawBody = (request as { rawBody?: string }).rawBody ?? "";

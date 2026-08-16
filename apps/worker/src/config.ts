@@ -12,6 +12,7 @@ export const config = {
   internalHmacSecret: required("WORKER_INTERNAL_HMAC_SECRET"),
   bffSharedSecret: required("WORKER_BFF_SHARED_SECRET"),
   telegramBotToken: process.env.TELEGRAM_BOT_TOKEN ?? "",
+  telegramWebhookSecret: process.env.TELEGRAM_WEBHOOK_SECRET ?? "",
   llm: {
     apiKey: required("LLM_API_KEY"),
     baseURL: process.env.LLM_BASE_URL || undefined,

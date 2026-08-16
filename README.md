@@ -1,16 +1,18 @@
 # Persona Assistant
 
 Single-user MVP: web chat (Next.js/Vercel), worker/agent (Fastify/Render),
-Postgres (Supabase), Telegram delivery-only notifications. See the strategy
-doc in the repo root for the full plan this implements.
+Postgres (Supabase), Telegram as both an outbound notification channel and an
+interactive chat channel. See the strategy doc in the repo root for the full
+plan this implements (Telegram-as-chat is an extension beyond that plan's
+original "delivery-only" scope).
 
 ## Layout
 
 - `apps/web` — Next.js App Router, Auth.js Google OAuth (single allowlisted
   email), chat + tasks UI, BFF routes that call the worker with a shared secret.
 - `apps/worker` — Fastify API: `/chat`, `/tasks`, `/tasks/:taskId`,
-  `/internal/tick`, `/health`, `/users/me`. Owns the LLM adapter, task/reminder
-  services, and the outbox/scheduler tick logic.
+  `/internal/tick`, `/telegram/webhook`, `/health`, `/users/me`. Owns the LLM
+  adapter, task/reminder services, and the outbox/scheduler tick logic.
 - `apps/scheduler-lambda` — Lambda invoked every minute by EventBridge
   Scheduler; HMAC-signs an empty body and calls `/internal/tick`.
 - `packages/core` — domain types, Zod schemas, `TaskService`/`ReminderService`/
@@ -33,6 +35,17 @@ pnpm dev:worker   # http://localhost:8787
 pnpm dev:web      # http://localhost:3000
 ```
 
+## Registering the Telegram webhook
+
+Once `TELEGRAM_WEBHOOK_SECRET` is set on the deployed worker, point Telegram
+at it (one-time, run from anywhere with curl):
+
+```bash
+curl -X POST "https://api.telegram.org/bot<TELEGRAM_BOT_TOKEN>/setWebhook" \
+  -H "Content-Type: application/json" \
+  -d '{"url":"https://<worker>.onrender.com/telegram/webhook","secret_token":"<TELEGRAM_WEBHOOK_SECRET>"}'
+```
+
 ## What's implemented
 
 - Full task/reminder domain, Zod-validated tool inputs, Drizzle schema for all
@@ -51,6 +64,15 @@ pnpm dev:web      # http://localhost:3000
   are delivered deterministically through the outbox, never through the LLM.
 - Google OAuth with single-email allowlist enforced in the `signIn` callback
   and route `middleware.ts`.
+- `POST /telegram/webhook` — Telegram as a second interactive chat surface.
+  Verified via the `X-Telegram-Bot-Api-Secret-Token` header (must match
+  `TELEGRAM_WEBHOOK_SECRET`), authorized by matching the incoming `chat.id`
+  against `users.telegram_chat_id` (single allowlisted user — no arbitrary
+  Telegram user can use the bot as a chat interface even if they find it).
+  Same `AgentRuntime.chat()` call as the web chat, so it shares the same
+  tools and audit trail; it does not currently share conversation history
+  with the web UI or across turns (each message is a fresh single-turn call —
+  a pre-existing limitation of `chat()`, not specific to Telegram).
 
 ## Deliberately deferred
 
