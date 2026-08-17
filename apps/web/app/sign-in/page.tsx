@@ -9,9 +9,7 @@ export default async function SignInPage({
   const { error } = await searchParams;
 
   return (
-    <main
-      style={{ display: "flex", height: "100vh", alignItems: "center", justifyContent: "center" }}
-    >
+    <main className="sign-in-shell">
       <form
         action={async (formData: FormData) => {
           "use server";
@@ -25,22 +23,12 @@ export default async function SignInPage({
             throw err;
           }
         }}
-        style={{ display: "flex", flexDirection: "column", gap: "0.75rem", width: 280 }}
+        className="sign-in-card"
       >
-        <h1 style={{ fontSize: "1.1rem", margin: 0 }}>Persona Assistant</h1>
-        <input
-          name="password"
-          type="password"
-          placeholder="Password"
-          autoFocus
-          style={{ padding: "0.6rem", fontSize: "1rem" }}
-        />
-        {error && (
-          <p style={{ color: "#c0392b", fontSize: "0.85rem", margin: 0 }}>
-            Sai mật khẩu hoặc thử lại quá nhiều lần.
-          </p>
-        )}
-        <button type="submit" style={{ padding: "0.65rem 1.5rem", fontSize: "1rem" }}>
+        <h1>Persona Assistant</h1>
+        <input name="password" type="password" placeholder="Password" autoFocus className="chat-input" />
+        {error && <p className="sign-in-error">Sai mật khẩu hoặc thử lại quá nhiều lần.</p>}
+        <button type="submit" className="btn btn-primary">
           Sign in
         </button>
       </form>

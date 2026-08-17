@@ -70,42 +70,26 @@ export function ChatPanel() {
   }
 
   return (
-    <section style={{ marginTop: "1.5rem" }}>
-      <div
-        style={{
-          border: "1px solid #ddd",
-          borderRadius: 8,
-          minHeight: 320,
-          padding: "1rem",
-          display: "flex",
-          flexDirection: "column",
-          gap: "0.5rem",
-        }}
-      >
+    <section className="chat-card">
+      <div className="chat-messages">
+        {entries.length === 0 && (
+          <p className="chat-empty">Nhắn gì đó để bắt đầu — ví dụ &quot;tạo task mua sữa mai 8h&quot;.</p>
+        )}
         {entries.map((entry, index) => (
-          <div key={index} style={{ textAlign: entry.role === "user" ? "right" : "left" }}>
-            <span
-              style={{
-                display: "inline-block",
-                padding: "0.5rem 0.75rem",
-                borderRadius: 8,
-                background: entry.role === "user" ? "#1a73e8" : "#f1f1f1",
-                color: entry.role === "user" ? "#fff" : "#111",
-                maxWidth: "80%",
-              }}
-            >
-              {entry.text}
-            </span>
+          <div key={index} className={`chat-row ${entry.role}`}>
+            <span className="bubble">{entry.text}</span>
             {entry.pendingApproval && !entry.resolved && (
-              <div style={{ marginTop: "0.4rem" }}>
-                <button onClick={() => decide(index, "approved")} style={{ marginRight: "0.5rem" }}>
+              <div className="approval-actions">
+                <button onClick={() => decide(index, "approved")} className="btn btn-primary">
                   ✅ Xác nhận
                 </button>
-                <button onClick={() => decide(index, "rejected")}>❌ Huỷ</button>
+                <button onClick={() => decide(index, "rejected")} className="btn btn-danger">
+                  ❌ Huỷ
+                </button>
               </div>
             )}
             {entry.resolved && (
-              <div style={{ marginTop: "0.25rem", fontSize: "0.85rem", color: "#666" }}>
+              <div className="approval-resolved">
                 {entry.resolved === "approved" ? "Đã xác nhận." : "Đã huỷ."}
               </div>
             )}
@@ -117,15 +101,15 @@ export function ChatPanel() {
           event.preventDefault();
           void sendMessage();
         }}
-        style={{ display: "flex", gap: "0.5rem", marginTop: "0.75rem" }}
+        className="chat-form"
       >
         <input
           value={input}
           onChange={(event) => setInput(event.target.value)}
           placeholder="Nhắc tôi..."
-          style={{ flex: 1, padding: "0.5rem" }}
+          className="chat-input"
         />
-        <button type="submit" disabled={pending}>
+        <button type="submit" disabled={pending} className="btn btn-primary">
           Send
         </button>
       </form>
