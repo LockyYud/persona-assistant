@@ -1,16 +1,31 @@
 import NextAuth from "next-auth";
-import Google from "next-auth/providers/google";
-
-const allowedEmail = process.env.AUTH_ALLOWED_EMAIL;
+import Credentials from "next-auth/providers/credentials";
+import { verifyPassword } from "@/lib/worker-client";
 
 export const { handlers, auth, signIn, signOut } = NextAuth({
-  providers: [Google],
+  providers: [
+    Credentials({
+      credentials: { password: { type: "password" } },
+      async authorize(credentials, request) {
+        const password = typeof credentials?.password === "string" ? credentials.password : "";
+        if (!password) return null;
+
+        const clientIp = request.headers.get("x-forwarded-for")?.split(",")[0]?.trim();
+
+        const result = await verifyPassword(password, clientIp);
+        if (!result.ok) return null;
+
+        return { id: "duy", email: result.email };
+      },
+    }),
+  ],
   callbacks: {
-    signIn({ profile }) {
-      if (!allowedEmail) return false;
-      return profile?.email === allowedEmail;
+    jwt({ token, user }) {
+      if (user?.email) token.email = user.email;
+      return token;
     },
-    session({ session }) {
+    session({ session, token }) {
+      if (token.email) session.user.email = token.email;
       return session;
     },
   },

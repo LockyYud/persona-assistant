@@ -1,4 +1,5 @@
 import Fastify, { type FastifyInstance } from "fastify";
+import bcrypt from "bcryptjs";
 import { eq } from "drizzle-orm";
 import { createDb, schema, type Database } from "@persona/db";
 import { TelegramNotificationChannel } from "@persona/integrations";
@@ -10,6 +11,7 @@ import { OpenAICompatibleAgentAdapter } from "./agent/openai-compatible-adapter.
 import { executeTool } from "./agent/tools.js";
 import { resolveApproval } from "./agent/approvals.js";
 import { verifyTickSignature } from "./auth/internal-signature.js";
+import { checkRateLimit, clearAttempts, recordFailedAttempt } from "./auth/password-rate-limiter.js";
 import { runTick } from "./scheduler/tick.js";
 import { makeChatIdResolver } from "./scheduler/chat-id-resolver.js";
 
@@ -90,6 +92,35 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
 
     return { user: { id: user.id, email: user.email, timezone: user.timezone } };
   });
+
+  app.post<{ Body: { password?: string; clientIp?: string } }>(
+    "/auth/verify-password",
+    async (request, reply) => {
+      const { password, clientIp } = request.body ?? {};
+      const rateLimitKey = clientIp || request.ip;
+
+      const rateLimit = checkRateLimit(rateLimitKey);
+      if (!rateLimit.allowed) {
+        return reply
+          .code(429)
+          .send({ ok: false, error: "Too many attempts", retryAfterSeconds: rateLimit.retryAfterSeconds });
+      }
+
+      if (!password) {
+        recordFailedAttempt(rateLimitKey);
+        return reply.code(400).send({ ok: false, error: "password is required" });
+      }
+
+      const valid = await bcrypt.compare(password, config.authPasswordHash);
+      if (!valid) {
+        recordFailedAttempt(rateLimitKey);
+        return reply.code(401).send({ ok: false, error: "invalid password" });
+      }
+
+      clearAttempts(rateLimitKey);
+      return { ok: true, email: config.authAllowedEmail };
+    },
+  );
 
   app.post("/chat", async (request, reply) => {
     const parsed = chatInputSchema.safeParse(request.body);

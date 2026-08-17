@@ -11,6 +11,8 @@ export const config = {
   databaseUrl: required("DATABASE_URL"),
   internalHmacSecret: required("WORKER_INTERNAL_HMAC_SECRET"),
   bffSharedSecret: required("WORKER_BFF_SHARED_SECRET"),
+  authPasswordHash: required("AUTH_PASSWORD_HASH"),
+  authAllowedEmail: required("AUTH_ALLOWED_EMAIL"),
   telegramBotToken: process.env.TELEGRAM_BOT_TOKEN ?? "",
   telegramWebhookSecret: process.env.TELEGRAM_WEBHOOK_SECRET ?? "",
   llm: {

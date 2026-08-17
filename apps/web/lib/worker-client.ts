@@ -22,6 +22,24 @@ async function workerFetch(path: string, init: RequestInit = {}) {
   return response.json();
 }
 
+export async function verifyPassword(
+  password: string,
+  clientIp?: string,
+): Promise<{ ok: boolean; email?: string }> {
+  const response = await fetch(`${workerBaseUrl}/auth/verify-password`, {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${sharedSecret}`,
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({ password, clientIp }),
+    cache: "no-store",
+  });
+
+  if (!response.ok) return { ok: false };
+  return (await response.json()) as { ok: boolean; email?: string };
+}
+
 export async function getCurrentUserId(email: string): Promise<string> {
   const data = (await workerFetch(`/users/me?email=${encodeURIComponent(email)}`)) as {
     user: { id: string };

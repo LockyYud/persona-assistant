@@ -8,12 +8,14 @@ original "delivery-only" scope).
 
 ## Layout
 
-- `apps/web` — Next.js App Router, Auth.js Google OAuth (single allowlisted
-  email), chat + tasks UI, BFF routes that call the worker with a shared secret.
+- `apps/web` — Next.js App Router, Auth.js Credentials (single password, no
+  OAuth), chat + tasks UI, BFF routes that call the worker with a shared
+  secret.
 - `apps/worker` — Fastify API: `/chat`, `/tasks`, `/tasks/:taskId`,
-  `/internal/tick`, `/telegram/webhook`, `/health`, `/users/me`. Owns the LLM
-  adapter, task/reminder services, and the outbox/scheduler tick logic.
-- `apps/scheduler-lambda` — Lambda invoked every minute by EventBridge
+  `/internal/tick`, `/telegram/webhook`, `/approvals/:id/decision`,
+  `/auth/verify-password`, `/health`, `/users/me`. Owns the LLM adapter,
+  task/reminder services, and the outbox/scheduler tick logic.
+- `apps/scheduler-lambda` — Lambda invoked every minute by a live EventBridge
   Scheduler; HMAC-signs an empty body and calls `/internal/tick`.
 - `packages/core` — domain types, Zod schemas, `TaskService`/`ReminderService`/
   `AgentRuntime` interfaces.
@@ -25,7 +27,7 @@ original "delivery-only" scope).
 
 ```bash
 pnpm install
-cp .env.example .env   # fill in DATABASE_URL, secrets, Google/Telegram/LLM keys
+cp .env.example .env   # fill in DATABASE_URL, secrets, AUTH_PASSWORD_HASH, Telegram/LLM keys
 pnpm --filter @persona/db generate   # already run once; re-run after schema changes
 pnpm --filter @persona/db migrate    # applies packages/db/drizzle/*.sql to DATABASE_URL
 pnpm --filter @persona/worker seed   # inserts the allowlisted user row
@@ -62,8 +64,13 @@ curl -X POST "https://api.telegram.org/bot<TELEGRAM_BOT_TOKEN>/setWebhook" \
   configured purely through `LLM_API_KEY` / `LLM_BASE_URL` / `LLM_MODEL` env
   vars — switching providers is a config change, not a code change. Reminders
   are delivered deterministically through the outbox, never through the LLM.
-- Google OAuth with single-email allowlist enforced in the `signIn` callback
-  and route `middleware.ts`.
+- **Single-password login**, no OAuth. Auth.js Credentials provider posts to
+  the worker's `POST /auth/verify-password`, which compares against a bcrypt
+  hash (`AUTH_PASSWORD_HASH`, plaintext never stored anywhere) and rate-limits
+  by IP: 5 failed attempts locks that IP out for 15 minutes. The limiter is
+  in-process in the worker (a long-running Fastify instance on Render, not a
+  serverless function), which is what makes IP-based lockout actually durable
+  across requests here.
 - `POST /telegram/webhook` — Telegram as a second interactive chat surface.
   Verified via the `X-Telegram-Bot-Api-Secret-Token` header (must match
   `TELEGRAM_WEBHOOK_SECRET`), authorized by matching the incoming `chat.id`
@@ -83,15 +90,20 @@ curl -X POST "https://api.telegram.org/bot<TELEGRAM_BOT_TOKEN>/setWebhook" \
   existing row instead of creating a duplicate — the extractor is shown the
   user's existing keys specifically to make this dedup work. The top facts
   by importance are injected into the system prompt on every turn.
-- **Tool permission layer.** `apps/worker/src/agent/permissions.ts` maps
-  every tool to an `auto` or `confirm` policy (unlisted tools default to
-  `confirm`). The 5 current tools are all `auto` (read/low-risk task and
-  reminder actions). A `confirm`-policy tool call is intercepted before
-  execution: it's recorded in `approval_requests` instead of running, and the
-  model is told to ask the user; a `confirmAction`/`rejectAction` tool call
-  on a later turn executes or discards it. No current tool needs this yet —
-  it's infrastructure for when a destructive/external tool (delete, send
-  email, Notion write) is added later.
+- **Tool permission layer, with confirmation kept out of the model's hands.**
+  `apps/worker/src/agent/permissions.ts` maps every tool to an `auto` or
+  `confirm` policy (unlisted tools default to `confirm`). The 5 current tools
+  are all `auto` (read/low-risk task and reminder actions). A `confirm`-policy
+  tool call is intercepted before execution and recorded in
+  `approval_requests` instead of running; `ChatResult.pendingApproval` tells
+  the channel to show a real confirm UI. There is no LLM-callable
+  "confirmAction" tool — the model can only propose and narrate, never
+  resolve its own pending approval. The only things that move an approval
+  from pending are a Telegram inline-button callback or `POST
+  /approvals/:id/decision` (web), both driven by an actual user click. No
+  current tool needs this yet (all 5 are auto) — it's infrastructure for
+  when a destructive/external tool (delete, send email, Notion write) is
+  added later, and the trust boundary is fixed *before* that happens.
 
 ## Deliberately deferred
 
@@ -99,11 +111,9 @@ curl -X POST "https://api.telegram.org/bot<TELEGRAM_BOT_TOKEN>/setWebhook" \
   covers OpenAI-compatible wire formats. Anthropic's API shape differs enough
   that it needs its own `AgentRuntime` implementation, not a config flag on
   `OpenAICompatibleAgentAdapter`.
-- **Infra provisioning** (Render service, Vercel project, EventBridge
-  Scheduler + Lambda + SQS DLQ, secret storage) — needs your cloud
-  credentials; not something to script blind. Supabase Postgres is already
-  provisioned (project `persona-assistant`, region `ap-southeast-1`),
-  migrated, and seeded.
+- **Vercel project** for `apps/web` — not deployed yet; everything else
+  (Supabase Postgres, Render worker, Telegram webhook, EventBridge Scheduler +
+  Lambda + SQS DLQ) is live.
 - Deeper observability (structured `request_id`/`agent_run_id`/`trigger_run_id`
   correlation across logs, alerting on DLQ/outbox-failed) beyond the
   `agent_runs` audit table and Fastify's default request logging.
