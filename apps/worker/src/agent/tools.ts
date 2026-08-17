@@ -8,11 +8,18 @@ import {
   type TaskService,
 } from "@persona/core";
 import type { Database } from "@persona/db";
-import type { NotionClient } from "@persona/integrations";
+import type { NotionClient, TavilyClient } from "@persona/integrations";
 import type { ChatCompletionTool } from "openai/resources/index.js";
 import { zodToJsonSchema } from "zod-to-json-schema";
 
-export function buildToolDefinitions(options: { notionEnabled: boolean } = { notionEnabled: false }): ChatCompletionTool[] {
+export interface ToolDefinitionOptions {
+  notionEnabled: boolean;
+  webSearchEnabled: boolean;
+}
+
+export function buildToolDefinitions(
+  options: ToolDefinitionOptions = { notionEnabled: false, webSearchEnabled: false },
+): ChatCompletionTool[] {
   const tools: ChatCompletionTool[] = [
     {
       type: "function",
@@ -94,6 +101,25 @@ export function buildToolDefinitions(options: { notionEnabled: boolean } = { not
     );
   }
 
+  if (options.webSearchEnabled) {
+    tools.push({
+      type: "function",
+      function: {
+        name: "web_search",
+        description:
+          "Search the public web. Use when the user asks about current events, recent information, facts, or anything requiring an internet lookup beyond your training data.",
+        parameters: {
+          type: "object",
+          properties: {
+            query: { type: "string", description: "The search query in natural language." },
+          },
+          required: ["query"],
+          additionalProperties: false,
+        },
+      },
+    });
+  }
+
   return tools;
 }
 
@@ -103,6 +129,7 @@ export interface ToolContext {
   taskService: TaskService;
   reminderService: ReminderService;
   notion?: NotionClient;
+  tavily?: TavilyClient;
 }
 
 /**
@@ -147,6 +174,11 @@ export async function executeTool(
       if (!ctx.notion) return { error: "Notion is not configured" };
       const { pageId } = rawArgs as { pageId: string };
       return ctx.notion.getPage(pageId);
+    }
+    case "web_search": {
+      if (!ctx.tavily) return { error: "Web search is not configured" };
+      const { query } = rawArgs as { query: string };
+      return ctx.tavily.search(query);
     }
     default:
       throw new Error(`Unknown tool: ${name}`);

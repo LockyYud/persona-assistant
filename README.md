@@ -111,6 +111,11 @@ curl -X POST "https://api.telegram.org/bot<TELEGRAM_BOT_TOKEN>/setWebhook" \
   Deliberately *not* wired into task/reminder management — those stay on
   Postgres so scheduling/outbox/Telegram delivery keep working. Unset the env
   var to disable the integration entirely.
+- **Web search.** When `TAVILY_API_KEY` is set, the agent gains a `web_search`
+  tool (`auto` policy) for current-events/internet lookups beyond training
+  data. The system prompt also injects the current UTC date/time every turn
+  so the model can resolve relative dates ("tomorrow", "next Monday")
+  against a real clock instead of guessing.
 
 ## Deliberately deferred
 

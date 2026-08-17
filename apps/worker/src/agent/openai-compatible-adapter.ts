@@ -1,7 +1,7 @@
 import OpenAI from "openai";
 import type { ChatCompletionMessageParam } from "openai/resources/index.js";
 import { schema, type Database } from "@persona/db";
-import type { NotionClient } from "@persona/integrations";
+import type { NotionClient, TavilyClient } from "@persona/integrations";
 import type {
   AgentRuntime,
   ChatMessageInput,
@@ -66,11 +66,12 @@ export class OpenAICompatibleAgentAdapter implements AgentRuntime {
     private readonly reminderService: ReminderService,
     provider: LlmProviderConfig,
     private readonly notion?: NotionClient,
+    private readonly tavily?: TavilyClient,
   ) {
     this.client = new OpenAI({ apiKey: provider.apiKey, baseURL: provider.baseURL });
     this.model = provider.model;
     this.runtimeLabel = provider.baseURL ?? "openai";
-    this.tools = buildToolDefinitions({ notionEnabled: !!notion });
+    this.tools = buildToolDefinitions({ notionEnabled: !!notion, webSearchEnabled: !!tavily });
   }
 
   async chat(input: ChatMessageInput): Promise<ChatResult> {
@@ -81,7 +82,10 @@ export class OpenAICompatibleAgentAdapter implements AgentRuntime {
     const pendingApproval = await getPendingApproval(this.db, input.userId);
 
     const messages: ChatCompletionMessageParam[] = [
-      { role: "system", content: buildSystemPrompt(memories, pendingApproval, !!this.notion) },
+      {
+        role: "system",
+        content: buildSystemPrompt(memories, pendingApproval, !!this.notion, !!this.tavily),
+      },
       ...history,
       { role: "user", content: input.message },
     ];
@@ -193,6 +197,7 @@ export class OpenAICompatibleAgentAdapter implements AgentRuntime {
         taskService: this.taskService,
         reminderService: this.reminderService,
         notion: this.notion,
+        tavily: this.tavily,
       });
     } catch (toolError) {
       return { error: toolError instanceof Error ? toolError.message : String(toolError) };
@@ -288,14 +293,25 @@ function buildSystemPrompt(
   memories: (typeof schema.memories.$inferSelect)[],
   pendingApproval: (typeof schema.approvalRequests.$inferSelect) | null,
   notionEnabled: boolean,
+  webSearchEnabled: boolean,
 ): string {
-  const sections = [BASE_SYSTEM_PROMPT];
+  const sections = [
+    BASE_SYSTEM_PROMPT,
+    `Current date/time (UTC): ${new Date().toISOString()}. Resolve relative dates ("tomorrow", "next Monday") against this.`,
+  ];
 
   if (notionEnabled) {
     sections.push(
       "You have access to the user's Notion workspace via notion_search and notion_get_page. " +
         "Use notion_search to find relevant pages when the user asks about notes, docs, or stored " +
         "information, then notion_get_page to read a specific page's content.",
+    );
+  }
+
+  if (webSearchEnabled) {
+    sections.push(
+      "You can search the public web using web_search when the user asks about current events, " +
+        "recent information, or anything requiring an internet lookup beyond your training data.",
     );
   }
 

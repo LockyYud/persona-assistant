@@ -2,7 +2,7 @@ import Fastify, { type FastifyInstance } from "fastify";
 import bcrypt from "bcryptjs";
 import { eq } from "drizzle-orm";
 import { createDb, schema, type Database } from "@persona/db";
-import { NotionClient, TelegramNotificationChannel } from "@persona/integrations";
+import { NotionClient, TavilyClient, TelegramNotificationChannel } from "@persona/integrations";
 import { chatInputSchema, createTaskInputSchema, updateTaskInputSchema } from "@persona/core";
 import { config } from "./config.js";
 import { DrizzleTaskService } from "./services/task-service.js";
@@ -39,12 +39,14 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   const taskService = new DrizzleTaskService(db);
   const reminderService = new DrizzleReminderService(db);
   const notion = config.notionApiKey ? new NotionClient(config.notionApiKey) : undefined;
+  const tavily = config.tavilyApiKey ? new TavilyClient(config.tavilyApiKey) : undefined;
   const agentRuntime = new OpenAICompatibleAgentAdapter(
     db,
     taskService,
     reminderService,
     config.llm,
     notion,
+    tavily,
   );
   const notificationChannel = new TelegramNotificationChannel(config.telegramBotToken);
   const resolveChatId = makeChatIdResolver(db);
