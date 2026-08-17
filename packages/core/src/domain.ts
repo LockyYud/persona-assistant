@@ -14,6 +14,8 @@ export interface Task {
 }
 
 export type ReminderStatus = "active" | "paused" | "completed" | "cancelled";
+export type ReminderSource = "manual" | "auto";
+export type ReminderKind = "urgent_early" | "early" | "due" | "overdue";
 
 export interface Reminder {
   id: string;
@@ -24,8 +26,28 @@ export interface Reminder {
   rrule: string | null;
   nextRunAt: Date;
   status: ReminderStatus;
+  source: ReminderSource;
+  kind: ReminderKind | null;
   createdAt: Date;
   updatedAt: Date;
+}
+
+/** Buckets used by the "Now" task view and every desktop touch point. */
+export interface NowTasks {
+  overdue: Task[];
+  today: Task[];
+  nextUp: Task | null;
+  /** Open tasks with no dueAt at all — never dropped silently. */
+  unscheduledCount: number;
+}
+
+export interface DesktopToken {
+  id: string;
+  userId: string;
+  label: string;
+  lastUsedAt: Date | null;
+  revokedAt: Date | null;
+  createdAt: Date;
 }
 
 export type TriggerRunStatus = "pending" | "processing" | "completed" | "failed";

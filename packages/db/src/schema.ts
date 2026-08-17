@@ -37,24 +37,44 @@ export const tasks = pgTable("tasks", {
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
-export const reminders = pgTable("reminders", {
-  id: uuid("id").primaryKey().defaultRandom(),
-  taskId: uuid("task_id")
-    .notNull()
-    .references(() => tasks.id, { onDelete: "cascade" }),
-  userId: uuid("user_id")
-    .notNull()
-    .references(() => users.id, { onDelete: "cascade" }),
-  message: text("message").notNull(),
-  timezone: text("timezone").notNull().default("Asia/Bangkok"),
-  rrule: text("rrule"),
-  nextRunAt: timestamp("next_run_at", { withTimezone: true }).notNull(),
-  status: text("status", { enum: ["active", "paused", "completed", "cancelled"] })
-    .notNull()
-    .default("active"),
-  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
-});
+export const reminders = pgTable(
+  "reminders",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    taskId: uuid("task_id")
+      .notNull()
+      .references(() => tasks.id, { onDelete: "cascade" }),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    message: text("message").notNull(),
+    timezone: text("timezone").notNull().default("Asia/Bangkok"),
+    rrule: text("rrule"),
+    nextRunAt: timestamp("next_run_at", { withTimezone: true }).notNull(),
+    status: text("status", { enum: ["active", "paused", "completed", "cancelled"] })
+      .notNull()
+      .default("active"),
+    // "auto" reminders are derived from a task's dueAt/priority (see
+    // reminder-derivation.ts); "manual" ones come from the LLM agent tool.
+    source: text("source", { enum: ["manual", "auto"] })
+      .notNull()
+      .default("manual"),
+    kind: text("kind", { enum: ["urgent_early", "early", "due", "overdue"] }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    // At most one *active* (not-yet-fired) auto reminder per (task, kind).
+    // Scoped to status='active' rather than just kind-is-not-null: once a
+    // reminder fires, the scheduler flips it to "completed" (see
+    // scheduler/tick.ts) and it must stay there forever as an audit trail —
+    // a later re-derive needs to be able to insert a fresh row for the same
+    // (task, kind) without colliding with that historical one.
+    taskKindActiveUnique: uniqueIndex("reminders_task_kind_active_idx")
+      .on(table.taskId, table.kind)
+      .where(sql`${table.kind} is not null and ${table.status} = 'active'`),
+  }),
+);
 
 export const triggerRuns = pgTable(
   "trigger_runs",
@@ -191,4 +211,21 @@ export const approvalRequests = pgTable("approval_requests", {
     .default("pending"),
   approvedAt: timestamp("approved_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+// A narrowly-scoped bearer credential for local desktop tools (Waybar,
+// Vicinae, the CLI) that must read/complete tasks without ever holding
+// WORKER_BFF_SHARED_SECRET. Only the raw token's sha256 hash is stored; the
+// raw value is shown once at mint time and never persisted anywhere.
+export const desktopTokens = pgTable("desktop_tokens", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  userId: uuid("user_id")
+    .notNull()
+    .references(() => users.id, { onDelete: "cascade" }),
+  tokenHash: text("token_hash").notNull().unique(),
+  label: text("label").notNull(),
+  lastUsedAt: timestamp("last_used_at", { withTimezone: true }),
+  revokedAt: timestamp("revoked_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });

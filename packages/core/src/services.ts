@@ -5,13 +5,14 @@ import type {
   ListTasksInput,
   UpdateTaskInput,
 } from "./schemas.js";
-import type { Reminder, Task } from "./domain.js";
+import type { NowTasks, Reminder, Task } from "./domain.js";
 
 export interface TaskService {
   createTask(userId: string, input: CreateTaskInput): Promise<Task>;
   updateTask(userId: string, input: UpdateTaskInput): Promise<Task>;
   completeTask(userId: string, input: CompleteTaskInput): Promise<Task>;
   listTasks(userId: string, input: ListTasksInput): Promise<Task[]>;
+  listNowTasks(userId: string): Promise<NowTasks>;
   getTask(userId: string, taskId: string): Promise<Task | null>;
 }
 

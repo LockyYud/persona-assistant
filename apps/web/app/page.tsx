@@ -11,6 +11,7 @@ export default async function HomePage() {
         <h1>Persona Assistant</h1>
         <nav>
           <Link href="/tasks">Tasks</Link>
+          <Link href="/settings">Settings</Link>
           <span className="user-email">{session?.user?.email}</span>
           <form
             action={async () => {

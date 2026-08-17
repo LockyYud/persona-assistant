@@ -1,4 +1,4 @@
-import Fastify, { type FastifyInstance } from "fastify";
+import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from "fastify";
 import bcrypt from "bcryptjs";
 import { eq } from "drizzle-orm";
 import { createDb, schema, type Database } from "@persona/db";
@@ -12,12 +12,26 @@ import { executeTool } from "./agent/tools.js";
 import { resolveApproval } from "./agent/approvals.js";
 import { verifyTickSignature } from "./auth/internal-signature.js";
 import { checkRateLimit, clearAttempts, recordFailedAttempt } from "./auth/password-rate-limiter.js";
+import {
+  listDesktopTokens,
+  mintDesktopToken,
+  revokeDesktopToken,
+  verifyDesktopToken,
+} from "./auth/desktop-token.js";
 import { runTick } from "./scheduler/tick.js";
 import { makeChatIdResolver } from "./scheduler/chat-id-resolver.js";
 
 export interface BuildAppOptions {
   db?: Database;
 }
+
+// Desktop tokens are scoped to "read tasks / complete task / snooze task"
+// (push a task's dueAt forward) — see /settings copy on the web app. Bounds
+// keep snooze from being usable as a general-purpose "reschedule to
+// anything" primitive: 5 minutes minimum (below that, just wait), 1 week
+// maximum (beyond that, edit the task's due date directly instead).
+const SNOOZE_MIN_MINUTES = 5;
+const SNOOZE_MAX_MINUTES = 10_080;
 
 export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   const app = Fastify({ logger: true });
@@ -79,8 +93,11 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     if (
       request.url.startsWith("/internal/") ||
       request.url.startsWith("/telegram/") ||
+      request.url.startsWith("/desktop/") ||
       request.url === "/health"
     ) {
+      // /desktop/* is gated separately below by the desktop-token
+      // preHandler, never by the BFF shared secret.
       return;
     }
 
@@ -89,6 +106,27 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       reply.code(401).send({ error: "unauthorized" });
     }
   });
+
+  /**
+   * Resolves the desktop-token bearer on /desktop/* routes to its owning
+   * userId, or replies 401. This is the ONLY source of userId for these
+   * routes — never trust a client-supplied one here.
+   */
+  async function requireDesktopUserId(
+    request: FastifyRequest,
+    reply: FastifyReply,
+  ): Promise<string | undefined> {
+    const authHeader = request.headers.authorization;
+    const raw = authHeader?.startsWith("Bearer ") ? authHeader.slice("Bearer ".length) : undefined;
+    const userId = raw ? await verifyDesktopToken(db, raw) : null;
+
+    if (!userId) {
+      reply.code(401).send({ error: "invalid or revoked desktop token" });
+      return undefined;
+    }
+
+    return userId;
+  }
 
   app.get("/health", async () => ({ status: "ok" }));
 
@@ -151,6 +189,25 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     return { tasks };
   });
 
+  app.get<{ Querystring: { userId: string } }>("/tasks/now", async (request, reply) => {
+    const { userId } = request.query;
+    if (!userId) return reply.code(400).send({ error: "userId is required" });
+
+    const now = await taskService.listNowTasks(userId);
+    return { now };
+  });
+
+  app.post<{ Params: { taskId: string }; Body: { userId: string } }>(
+    "/tasks/:taskId/complete",
+    async (request, reply) => {
+      const { userId } = request.body;
+      if (!userId) return reply.code(400).send({ error: "userId is required" });
+
+      const task = await taskService.completeTask(userId, { taskId: request.params.taskId });
+      return { task };
+    },
+  );
+
   app.post<{ Body: { userId: string } & Record<string, unknown> }>("/tasks", async (request, reply) => {
     const { userId, ...rest } = request.body;
     if (!userId) return reply.code(400).send({ error: "userId is required" });
@@ -190,6 +247,89 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
 
     return { decision, result: outcome.result };
   });
+
+  // --- Desktop token management (Next.js server only, gated by the BFF
+  // shared secret like every other route above) ---
+
+  app.post<{ Body: { userId: string; label?: string } }>(
+    "/auth/desktop-tokens",
+    async (request, reply) => {
+      const { userId, label } = request.body;
+      if (!userId) return reply.code(400).send({ error: "userId is required" });
+
+      const { token, raw } = await mintDesktopToken(db, userId, label?.trim() || "Desktop");
+      return reply.code(201).send({ token, raw });
+    },
+  );
+
+  app.get<{ Querystring: { userId: string } }>("/auth/desktop-tokens", async (request, reply) => {
+    const { userId } = request.query;
+    if (!userId) return reply.code(400).send({ error: "userId is required" });
+
+    const tokens = await listDesktopTokens(db, userId);
+    return { tokens };
+  });
+
+  app.delete<{ Params: { id: string }; Body: { userId: string } }>(
+    "/auth/desktop-tokens/:id",
+    async (request, reply) => {
+      const { userId } = request.body;
+      if (!userId) return reply.code(400).send({ error: "userId is required" });
+
+      const revoked = await revokeDesktopToken(db, userId, request.params.id);
+      if (!revoked) return reply.code(404).send({ error: "token not found" });
+      return { ok: true };
+    },
+  );
+
+  // --- Desktop routes: gated by a desktop token (see requireDesktopUserId
+  // above), never by the BFF shared secret and never by a client userId. ---
+
+  app.get("/desktop/tasks/now", async (request, reply) => {
+    const userId = await requireDesktopUserId(request, reply);
+    if (!userId) return;
+
+    const now = await taskService.listNowTasks(userId);
+    return { now };
+  });
+
+  app.post<{ Params: { taskId: string } }>(
+    "/desktop/tasks/:taskId/complete",
+    async (request, reply) => {
+      const userId = await requireDesktopUserId(request, reply);
+      if (!userId) return;
+
+      const task = await taskService.completeTask(userId, { taskId: request.params.taskId });
+      return { task };
+    },
+  );
+
+  app.post<{ Params: { taskId: string }; Body: { minutes?: number } }>(
+    "/desktop/tasks/:taskId/snooze",
+    async (request, reply) => {
+      const userId = await requireDesktopUserId(request, reply);
+      if (!userId) return;
+
+      const existing = await taskService.getTask(userId, request.params.taskId);
+      if (!existing) return reply.code(404).send({ error: "task not found" });
+
+      const minutes = request.body?.minutes ?? 60;
+      if (!Number.isInteger(minutes) || minutes < SNOOZE_MIN_MINUTES || minutes > SNOOZE_MAX_MINUTES) {
+        return reply.code(400).send({
+          error: `minutes must be an integer between ${SNOOZE_MIN_MINUTES} and ${SNOOZE_MAX_MINUTES}`,
+        });
+      }
+
+      const base = existing.dueAt && existing.dueAt.getTime() > Date.now() ? existing.dueAt : new Date();
+      const dueAt = new Date(base.getTime() + minutes * 60_000);
+
+      const task = await taskService.updateTask(userId, {
+        taskId: request.params.taskId,
+        dueAt: dueAt.toISOString(),
+      });
+      return { task };
+    },
+  );
 
   app.post<{
     Body: {

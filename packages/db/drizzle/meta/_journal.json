@@ -15,6 +15,13 @@
       "when": 1786893506415,
       "tag": "0001_great_spiral",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1786963634976,
+      "tag": "0002_early_darkhawk",
+      "breakpoints": true
     }
   ]
 }

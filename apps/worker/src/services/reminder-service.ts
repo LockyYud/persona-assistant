@@ -12,6 +12,8 @@ function toDomainReminder(row: typeof schema.reminders.$inferSelect): Reminder {
     rrule: row.rrule,
     nextRunAt: row.nextRunAt,
     status: row.status,
+    source: row.source,
+    kind: row.kind,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   };

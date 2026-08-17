@@ -62,6 +62,60 @@ export async function listTasks(userId: string) {
   return workerFetch(`/tasks?userId=${encodeURIComponent(userId)}`);
 }
 
+export async function listNowTasks(userId: string) {
+  return workerFetch(`/tasks/now?userId=${encodeURIComponent(userId)}`) as Promise<{
+    now: {
+      overdue: TaskRow[];
+      today: TaskRow[];
+      nextUp: TaskRow | null;
+      unscheduledCount: number;
+    };
+  }>;
+}
+
+export async function completeTask(userId: string, taskId: string) {
+  return workerFetch(`/tasks/${encodeURIComponent(taskId)}/complete`, {
+    method: "POST",
+    body: JSON.stringify({ userId }),
+  });
+}
+
+export interface TaskRow {
+  id: string;
+  title: string;
+  status: string;
+  priority: string;
+  dueAt: string | null;
+}
+
+export interface DesktopTokenRow {
+  id: string;
+  label: string;
+  lastUsedAt: string | null;
+  revokedAt: string | null;
+  createdAt: string;
+}
+
+export async function listDesktopTokens(userId: string) {
+  return workerFetch(`/auth/desktop-tokens?userId=${encodeURIComponent(userId)}`) as Promise<{
+    tokens: DesktopTokenRow[];
+  }>;
+}
+
+export async function mintDesktopToken(userId: string, label: string) {
+  return workerFetch("/auth/desktop-tokens", {
+    method: "POST",
+    body: JSON.stringify({ userId, label }),
+  }) as Promise<{ token: DesktopTokenRow; raw: string }>;
+}
+
+export async function revokeDesktopToken(userId: string, tokenId: string) {
+  return workerFetch(`/auth/desktop-tokens/${encodeURIComponent(tokenId)}`, {
+    method: "DELETE",
+    body: JSON.stringify({ userId }),
+  });
+}
+
 export async function createTask(userId: string, input: Record<string, unknown>) {
   return workerFetch("/tasks", {
     method: "POST",
