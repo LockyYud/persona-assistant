@@ -14,6 +14,8 @@ const TOOL_POLICIES: Record<string, ToolPolicy> = {
   updateTask: "auto",
   completeTask: "auto",
   createReminder: "auto",
+  notion_search: "auto",
+  notion_get_page: "auto",
 };
 
 export function getToolPolicy(toolName: string): ToolPolicy {

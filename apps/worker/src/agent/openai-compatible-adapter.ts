@@ -1,6 +1,7 @@
 import OpenAI from "openai";
 import type { ChatCompletionMessageParam } from "openai/resources/index.js";
 import { schema, type Database } from "@persona/db";
+import type { NotionClient } from "@persona/integrations";
 import type {
   AgentRuntime,
   ChatMessageInput,
@@ -55,7 +56,7 @@ export interface LlmProviderConfig {
  */
 export class OpenAICompatibleAgentAdapter implements AgentRuntime {
   private readonly client: OpenAI;
-  private readonly tools = buildToolDefinitions();
+  private readonly tools: ReturnType<typeof buildToolDefinitions>;
   private readonly model: string;
   private readonly runtimeLabel: string;
 
@@ -64,10 +65,12 @@ export class OpenAICompatibleAgentAdapter implements AgentRuntime {
     private readonly taskService: TaskService,
     private readonly reminderService: ReminderService,
     provider: LlmProviderConfig,
+    private readonly notion?: NotionClient,
   ) {
     this.client = new OpenAI({ apiKey: provider.apiKey, baseURL: provider.baseURL });
     this.model = provider.model;
     this.runtimeLabel = provider.baseURL ?? "openai";
+    this.tools = buildToolDefinitions({ notionEnabled: !!notion });
   }
 
   async chat(input: ChatMessageInput): Promise<ChatResult> {
@@ -78,7 +81,7 @@ export class OpenAICompatibleAgentAdapter implements AgentRuntime {
     const pendingApproval = await getPendingApproval(this.db, input.userId);
 
     const messages: ChatCompletionMessageParam[] = [
-      { role: "system", content: buildSystemPrompt(memories, pendingApproval) },
+      { role: "system", content: buildSystemPrompt(memories, pendingApproval, !!this.notion) },
       ...history,
       { role: "user", content: input.message },
     ];
@@ -189,6 +192,7 @@ export class OpenAICompatibleAgentAdapter implements AgentRuntime {
         db: this.db,
         taskService: this.taskService,
         reminderService: this.reminderService,
+        notion: this.notion,
       });
     } catch (toolError) {
       return { error: toolError instanceof Error ? toolError.message : String(toolError) };
@@ -283,8 +287,17 @@ function extractPendingApproval(toolCalls: ChatResult["toolCalls"]): PendingAppr
 function buildSystemPrompt(
   memories: (typeof schema.memories.$inferSelect)[],
   pendingApproval: (typeof schema.approvalRequests.$inferSelect) | null,
+  notionEnabled: boolean,
 ): string {
   const sections = [BASE_SYSTEM_PROMPT];
+
+  if (notionEnabled) {
+    sections.push(
+      "You have access to the user's Notion workspace via notion_search and notion_get_page. " +
+        "Use notion_search to find relevant pages when the user asks about notes, docs, or stored " +
+        "information, then notion_get_page to read a specific page's content.",
+    );
+  }
 
   if (memories.length > 0) {
     const facts = memories.map((m) => `- (${m.type}) ${m.content}`).join("\n");

@@ -105,6 +105,13 @@ curl -X POST "https://api.telegram.org/bot<TELEGRAM_BOT_TOKEN>/setWebhook" \
   when a destructive/external tool (delete, send email, Notion write) is
   added later, and the trust boundary is fixed *before* that happens.
 
+- **Notion, as a read-only knowledge tool.** When `NOTION_API_KEY` is set, the
+  agent gains `notion_search`/`notion_get_page` tools (both `auto` policy —
+  read-only) to look up pages in the user's Notion workspace as context.
+  Deliberately *not* wired into task/reminder management — those stay on
+  Postgres so scheduling/outbox/Telegram delivery keep working. Unset the env
+  var to disable the integration entirely.
+
 ## Deliberately deferred
 
 - **A native Anthropic (Messages API) adapter.** The current adapter only

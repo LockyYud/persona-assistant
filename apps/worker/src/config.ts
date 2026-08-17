@@ -15,6 +15,7 @@ export const config = {
   authAllowedEmail: required("AUTH_ALLOWED_EMAIL"),
   telegramBotToken: process.env.TELEGRAM_BOT_TOKEN ?? "",
   telegramWebhookSecret: process.env.TELEGRAM_WEBHOOK_SECRET ?? "",
+  notionApiKey: process.env.NOTION_API_KEY || undefined,
   llm: {
     apiKey: required("LLM_API_KEY"),
     baseURL: process.env.LLM_BASE_URL || undefined,

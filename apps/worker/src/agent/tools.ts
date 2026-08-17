@@ -8,11 +8,12 @@ import {
   type TaskService,
 } from "@persona/core";
 import type { Database } from "@persona/db";
+import type { NotionClient } from "@persona/integrations";
 import type { ChatCompletionTool } from "openai/resources/index.js";
 import { zodToJsonSchema } from "zod-to-json-schema";
 
-export function buildToolDefinitions(): ChatCompletionTool[] {
-  return [
+export function buildToolDefinitions(options: { notionEnabled: boolean } = { notionEnabled: false }): ChatCompletionTool[] {
+  const tools: ChatCompletionTool[] = [
     {
       type: "function",
       function: {
@@ -55,6 +56,45 @@ export function buildToolDefinitions(): ChatCompletionTool[] {
       },
     },
   ];
+
+  if (options.notionEnabled) {
+    tools.push(
+      {
+        type: "function",
+        function: {
+          name: "notion_search",
+          description:
+            "Search the user's Notion workspace for pages and databases matching a query. Use when the user asks about notes, docs, or info that might be stored in Notion.",
+          parameters: {
+            type: "object",
+            properties: {
+              query: { type: "string", description: "Search text." },
+            },
+            required: ["query"],
+            additionalProperties: false,
+          },
+        },
+      },
+      {
+        type: "function",
+        function: {
+          name: "notion_get_page",
+          description:
+            "Get the text content of a Notion page by its ID. Use after notion_search to read a specific page's content.",
+          parameters: {
+            type: "object",
+            properties: {
+              pageId: { type: "string", description: "The Notion page ID (from notion_search results)." },
+            },
+            required: ["pageId"],
+            additionalProperties: false,
+          },
+        },
+      },
+    );
+  }
+
+  return tools;
 }
 
 export interface ToolContext {
@@ -62,6 +102,7 @@ export interface ToolContext {
   db: Database;
   taskService: TaskService;
   reminderService: ReminderService;
+  notion?: NotionClient;
 }
 
 /**
@@ -96,6 +137,16 @@ export async function executeTool(
     case "createReminder": {
       const input = createReminderInputSchema.parse(rawArgs);
       return ctx.reminderService.createReminder(ctx.userId, input);
+    }
+    case "notion_search": {
+      if (!ctx.notion) return { error: "Notion is not configured" };
+      const { query } = rawArgs as { query: string };
+      return ctx.notion.search(query);
+    }
+    case "notion_get_page": {
+      if (!ctx.notion) return { error: "Notion is not configured" };
+      const { pageId } = rawArgs as { pageId: string };
+      return ctx.notion.getPage(pageId);
     }
     default:
       throw new Error(`Unknown tool: ${name}`);
