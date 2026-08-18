@@ -293,6 +293,19 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     return { now };
   });
 
+  app.post("/desktop/tasks", async (request, reply) => {
+    const userId = await requireDesktopUserId(request, reply);
+    if (!userId) return;
+
+    const parsed = createTaskInputSchema.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.code(400).send({ error: parsed.error.flatten() });
+    }
+
+    const task = await taskService.createTask(userId, parsed.data);
+    return reply.code(201).send({ task });
+  });
+
   app.post<{ Params: { taskId: string } }>(
     "/desktop/tasks/:taskId/complete",
     async (request, reply) => {

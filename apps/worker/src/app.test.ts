@@ -111,4 +111,38 @@ describe("desktop routes", () => {
     expect(tooHigh.statusCode).toBe(400);
     expect(valid.statusCode).toBe(200);
   });
+
+  it("creates a task via POST /desktop/tasks, scoped to the token's user", async () => {
+    const app = buildApp({ db: getTestDb() });
+    const userId = await createTestUser();
+    const { raw } = await mintDesktopToken(getTestDb(), userId, "test");
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/desktop/tasks",
+      headers: { authorization: `Bearer ${raw}` },
+      payload: { title: "Quick-added from widget", priority: "urgent" },
+    });
+
+    expect(response.statusCode).toBe(201);
+    const task = response.json().task;
+    expect(task.userId).toBe(userId);
+    expect(task.title).toBe("Quick-added from widget");
+    expect(task.priority).toBe("urgent");
+  });
+
+  it("rejects POST /desktop/tasks with an invalid body", async () => {
+    const app = buildApp({ db: getTestDb() });
+    const userId = await createTestUser();
+    const { raw } = await mintDesktopToken(getTestDb(), userId, "test");
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/desktop/tasks",
+      headers: { authorization: `Bearer ${raw}` },
+      payload: { title: "" },
+    });
+
+    expect(response.statusCode).toBe(400);
+  });
 });
