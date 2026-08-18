@@ -39,6 +39,8 @@ export interface NowTasks {
   nextUp: Task | null;
   /** Open tasks with no dueAt at all — never dropped silently. */
   unscheduledCount: number;
+  /** The unscheduled tasks themselves, oldest first, capped — see UNSCHEDULED_LIST_CAP. */
+  unscheduled: Task[];
 }
 
 export interface DesktopToken {

@@ -36,7 +36,13 @@ describe("desktop routes", () => {
 
     expect(response.statusCode).toBe(200);
     const body = response.json();
-    expect(body.now).toEqual({ overdue: [], today: [], nextUp: null, unscheduledCount: 0 });
+    expect(body.now).toEqual({
+      overdue: [],
+      today: [],
+      nextUp: null,
+      unscheduledCount: 0,
+      unscheduled: [],
+    });
   });
 
   it("never accepts a client-supplied userId on /desktop/* — identity comes only from the token", async () => {

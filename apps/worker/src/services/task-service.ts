@@ -11,6 +11,10 @@ import type {
 } from "@persona/core";
 import { cancelAutoReminders, deriveTaskReminders } from "./reminder-derivation.js";
 
+// Unscheduled tasks aren't time-bounded, so a very old backlog could grow
+// without limit — cap the returned list; unscheduledCount stays the true total.
+const UNSCHEDULED_LIST_CAP = 20;
+
 function dateKeyInTimezone(date: Date, timezone: string): string {
   return new Intl.DateTimeFormat("en-CA", { timeZone: timezone }).format(date);
 }
@@ -113,11 +117,11 @@ export class DrizzleTaskService implements TaskService {
     const overdue: Task[] = [];
     const today: Task[] = [];
     const future: Task[] = [];
-    let unscheduledCount = 0;
+    const unscheduled: Task[] = [];
 
     for (const task of tasks) {
       if (!task.dueAt) {
-        unscheduledCount += 1;
+        unscheduled.push(task);
         continue;
       }
       if (task.dueAt.getTime() < now.getTime()) {
@@ -132,10 +136,17 @@ export class DrizzleTaskService implements TaskService {
     overdue.sort((a, b) => a.dueAt!.getTime() - b.dueAt!.getTime());
     today.sort((a, b) => a.dueAt!.getTime() - b.dueAt!.getTime());
     future.sort((a, b) => a.dueAt!.getTime() - b.dueAt!.getTime());
+    unscheduled.sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
 
     const nextUp = overdue.length === 0 && today.length === 0 ? (future[0] ?? null) : null;
 
-    return { overdue, today, nextUp, unscheduledCount };
+    return {
+      overdue,
+      today,
+      nextUp,
+      unscheduledCount: unscheduled.length,
+      unscheduled: unscheduled.slice(0, UNSCHEDULED_LIST_CAP),
+    };
   }
 
   async getTask(userId: string, taskId: string): Promise<Task | null> {

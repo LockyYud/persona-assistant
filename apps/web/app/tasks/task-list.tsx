@@ -15,6 +15,7 @@ interface NowTasks {
   today: TaskRow[];
   nextUp: TaskRow | null;
   unscheduledCount: number;
+  unscheduled: TaskRow[];
 }
 
 function removeTask(now: NowTasks, taskId: string): NowTasks {

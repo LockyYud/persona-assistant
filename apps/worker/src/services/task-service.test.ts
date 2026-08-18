@@ -49,6 +49,19 @@ describe("DrizzleTaskService.listNowTasks", () => {
     void future;
   });
 
+  it("returns unscheduled tasks oldest-first, not just a count", async () => {
+    const userId = await createTestUser();
+    const service = new DrizzleTaskService(getTestDb());
+
+    const first = await service.createTask(userId, { title: "First backlog item", priority: "low" });
+    const second = await service.createTask(userId, { title: "Second backlog item", priority: "low" });
+
+    const result = await service.listNowTasks(userId);
+
+    expect(result.unscheduledCount).toBe(2);
+    expect(result.unscheduled.map((t) => t.id)).toEqual([first.id, second.id]);
+  });
+
   it("surfaces nextUp only when there's nothing overdue or due today", async () => {
     const now = new Date("2026-01-15T05:00:00.000Z");
     vi.useFakeTimers();

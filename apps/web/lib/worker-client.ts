@@ -69,6 +69,7 @@ export async function listNowTasks(userId: string) {
       today: TaskRow[];
       nextUp: TaskRow | null;
       unscheduledCount: number;
+      unscheduled: TaskRow[];
     };
   }>;
 }
