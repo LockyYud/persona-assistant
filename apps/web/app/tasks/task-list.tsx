@@ -7,6 +7,7 @@ interface TaskRow {
   title: string;
   status: string;
   priority: string;
+  type: string;
   dueAt: string | null;
 }
 
@@ -136,7 +137,7 @@ function TaskGroup({
               <div>
                 <div className="task-title">{task.title}</div>
                 <div className="task-meta">
-                  {task.priority}
+                  {task.type} · {task.priority}
                   {task.dueAt ? ` · ${formatRelative(task.dueAt)}` : ""}
                 </div>
               </div>

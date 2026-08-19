@@ -30,12 +30,13 @@ function asReadFormat(writeProperties: Record<string, unknown>): NotionPage["pro
 }
 
 describe("notionPageToTaskFields", () => {
-  it("reads title, status, priority, due date and description from Notion properties", () => {
+  it("reads title, status, priority, type, due date and description from Notion properties", () => {
     const fields = notionPageToTaskFields(
       makePage({
         Name: { type: "title", title: [{ plain_text: "Buy milk" }] },
         Status: { select: { name: "in_progress" } },
         Priority: { select: { name: "high" } },
+        Type: { select: { name: "chore" } },
         Due: { date: { start: "2026-08-20T10:00:00.000Z" } },
         Description: { rich_text: [{ plain_text: "2% please" }] },
       }),
@@ -46,6 +47,7 @@ describe("notionPageToTaskFields", () => {
       description: "2% please",
       status: "in_progress",
       priority: "high",
+      type: "chore",
       dueAt: new Date("2026-08-20T10:00:00.000Z"),
     });
   });
@@ -56,6 +58,7 @@ describe("notionPageToTaskFields", () => {
         Name: { type: "title", title: [] },
         Status: { select: { name: "not_a_real_status" } },
         Priority: { select: null },
+        Type: { select: { name: "not_a_real_type" } },
       }),
     );
 
@@ -64,6 +67,7 @@ describe("notionPageToTaskFields", () => {
       description: null,
       status: "open",
       priority: "medium",
+      type: "personal",
       dueAt: null,
     });
   });
@@ -78,6 +82,7 @@ describe("taskToNotionProperties", () => {
       description: "Tag v1.2.0 and deploy",
       status: "open",
       priority: "urgent",
+      type: "work",
       dueAt: new Date("2026-08-25T09:00:00.000Z"),
       notionPageId: null,
       createdAt: new Date(),
@@ -91,6 +96,7 @@ describe("taskToNotionProperties", () => {
       description: task.description,
       status: task.status,
       priority: task.priority,
+      type: task.type,
       dueAt: task.dueAt,
     });
   });

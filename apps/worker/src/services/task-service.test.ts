@@ -23,20 +23,23 @@ describe("DrizzleTaskService.listNowTasks", () => {
     const overdue = await service.createTask(userId, {
       title: "Overdue task",
       priority: "medium",
+      type: "personal",
       dueAt: new Date(now.getTime() - 60 * 60 * 1000).toISOString(),
     });
     const today = await service.createTask(userId, {
       title: "Due later today",
       priority: "medium",
+      type: "personal",
       dueAt: new Date(now.getTime() + 60 * 60 * 1000).toISOString(),
     });
     const future = await service.createTask(userId, {
       title: "Due next week",
       priority: "medium",
+      type: "personal",
       dueAt: new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000).toISOString(),
     });
-    await service.createTask(userId, { title: "No deadline yet", priority: "low" });
-    await service.createTask(userId, { title: "Also no deadline", priority: "low" });
+    await service.createTask(userId, { title: "No deadline yet", priority: "low", type: "personal" });
+    await service.createTask(userId, { title: "Also no deadline", priority: "low", type: "personal" });
 
     const result = await service.listNowTasks(userId);
 
@@ -53,8 +56,8 @@ describe("DrizzleTaskService.listNowTasks", () => {
     const userId = await createTestUser();
     const service = new DrizzleTaskService(getTestDb());
 
-    const first = await service.createTask(userId, { title: "First backlog item", priority: "low" });
-    const second = await service.createTask(userId, { title: "Second backlog item", priority: "low" });
+    const first = await service.createTask(userId, { title: "First backlog item", priority: "low", type: "personal" });
+    const second = await service.createTask(userId, { title: "Second backlog item", priority: "low", type: "personal" });
 
     const result = await service.listNowTasks(userId);
 
@@ -73,11 +76,13 @@ describe("DrizzleTaskService.listNowTasks", () => {
     const soonest = await service.createTask(userId, {
       title: "Soonest future task",
       priority: "medium",
+      type: "personal",
       dueAt: new Date(now.getTime() + 3 * 24 * 60 * 60 * 1000).toISOString(),
     });
     await service.createTask(userId, {
       title: "Later future task",
       priority: "medium",
+      type: "personal",
       dueAt: new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000).toISOString(),
     });
 
@@ -95,6 +100,7 @@ describe("DrizzleTaskService.listNowTasks", () => {
     const task = await service.createTask(userId, {
       title: "Will be completed",
       priority: "medium",
+      type: "personal",
       dueAt: new Date(Date.now() - 60 * 60 * 1000).toISOString(),
     });
     await service.completeTask(userId, { taskId: task.id });
@@ -111,7 +117,7 @@ describe("DrizzleTaskService.completeTask", () => {
   it("is idempotent — completing an already-done task again just no-ops", async () => {
     const userId = await createTestUser();
     const service = new DrizzleTaskService(getTestDb());
-    const task = await service.createTask(userId, { title: "Ship it", priority: "medium" });
+    const task = await service.createTask(userId, { title: "Ship it", priority: "medium", type: "personal" });
 
     const first = await service.completeTask(userId, { taskId: task.id });
     const second = await service.completeTask(userId, { taskId: task.id });

@@ -1,5 +1,6 @@
 export type TaskStatus = "open" | "in_progress" | "done" | "cancelled";
 export type TaskPriority = "low" | "medium" | "high" | "urgent";
+export type TaskType = "work" | "personal" | "chore";
 
 export interface Task {
   id: string;
@@ -8,6 +9,7 @@ export interface Task {
   description: string | null;
   status: TaskStatus;
   priority: TaskPriority;
+  type: TaskType;
   dueAt: Date | null;
   notionPageId: string | null;
   createdAt: Date;

@@ -29,6 +29,7 @@ function toDomainTask(row: typeof schema.tasks.$inferSelect): Task {
     description: row.description,
     status: row.status,
     priority: row.priority,
+    type: row.type,
     dueAt: row.dueAt,
     notionPageId: row.notionPageId,
     createdAt: row.createdAt,
@@ -61,6 +62,7 @@ export class DrizzleTaskService implements TaskService {
           title: input.title,
           description: input.description ?? null,
           priority: input.priority,
+          type: input.type,
           dueAt: input.dueAt ? new Date(input.dueAt) : null,
         })
         .returning();
@@ -80,6 +82,7 @@ export class DrizzleTaskService implements TaskService {
       if (input.description !== undefined) updates.description = input.description;
       if (input.status !== undefined) updates.status = input.status;
       if (input.priority !== undefined) updates.priority = input.priority;
+      if (input.type !== undefined) updates.type = input.type;
       if (input.dueAt !== undefined) updates.dueAt = input.dueAt ? new Date(input.dueAt) : null;
 
       const [row] = await tx

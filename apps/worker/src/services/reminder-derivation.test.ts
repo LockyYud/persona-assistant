@@ -23,6 +23,7 @@ function toTask(row: typeof schema.tasks.$inferSelect): Task {
     description: row.description,
     status: row.status,
     priority: row.priority,
+    type: row.type,
     dueAt: row.dueAt,
     notionPageId: row.notionPageId,
     createdAt: row.createdAt,

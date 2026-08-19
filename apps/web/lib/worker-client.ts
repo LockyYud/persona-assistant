@@ -86,6 +86,7 @@ export interface TaskRow {
   title: string;
   status: string;
   priority: string;
+  type: string;
   dueAt: string | null;
 }
 

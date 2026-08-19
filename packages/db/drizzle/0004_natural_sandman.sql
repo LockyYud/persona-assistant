@@ -1,0 +1,1 @@
+ALTER TABLE "tasks" ADD COLUMN "type" text DEFAULT 'personal' NOT NULL;

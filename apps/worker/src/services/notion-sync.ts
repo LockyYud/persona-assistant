@@ -1,7 +1,7 @@
 import { and, eq } from "drizzle-orm";
 import { schema, type Database } from "@persona/db";
 import type { NotionClient, NotionPage } from "@persona/integrations";
-import type { Task, TaskPriority, TaskStatus } from "@persona/core";
+import type { Task, TaskPriority, TaskStatus, TaskType } from "@persona/core";
 import { deriveTaskReminders } from "./reminder-derivation.js";
 
 /**
@@ -11,12 +11,14 @@ import { deriveTaskReminders } from "./reminder-derivation.js";
  */
 const STATUS_VALUES: readonly TaskStatus[] = ["open", "in_progress", "done", "cancelled"];
 const PRIORITY_VALUES: readonly TaskPriority[] = ["low", "medium", "high", "urgent"];
+const TYPE_VALUES: readonly TaskType[] = ["work", "personal", "chore"];
 
 interface NotionTaskFields {
   title: string;
   description: string | null;
   status: TaskStatus;
   priority: TaskPriority;
+  type: TaskType;
   dueAt: Date | null;
 }
 
@@ -40,6 +42,10 @@ function isTaskPriority(value: string | undefined): value is TaskPriority {
   return PRIORITY_VALUES.includes(value as TaskPriority);
 }
 
+function isTaskType(value: string | undefined): value is TaskType {
+  return TYPE_VALUES.includes(value as TaskType);
+}
+
 /** Reads task fields out of a raw Notion page's properties. */
 export function notionPageToTaskFields(page: NotionPage): NotionTaskFields {
   const properties = page.properties as Record<string, NotionProperty>;
@@ -47,6 +53,7 @@ export function notionPageToTaskFields(page: NotionPage): NotionTaskFields {
 
   const statusName = properties.Status?.select?.name;
   const priorityName = properties.Priority?.select?.name;
+  const typeName = properties.Type?.select?.name;
   const description = properties.Description?.rich_text;
   const due = properties.Due?.date?.start;
 
@@ -55,6 +62,7 @@ export function notionPageToTaskFields(page: NotionPage): NotionTaskFields {
     description: description?.length ? plainText(description) : null,
     status: isTaskStatus(statusName) ? statusName : "open",
     priority: isTaskPriority(priorityName) ? priorityName : "medium",
+    type: isTaskType(typeName) ? typeName : "personal",
     dueAt: due ? new Date(due) : null,
   };
 }
@@ -66,6 +74,7 @@ export function taskToNotionProperties(task: Task): Record<string, unknown> {
     Description: { rich_text: task.description ? [{ text: { content: task.description } }] : [] },
     Status: { select: { name: task.status } },
     Priority: { select: { name: task.priority } },
+    Type: { select: { name: task.type } },
     Due: { date: task.dueAt ? { start: task.dueAt.toISOString() } : null },
   };
 }
@@ -186,6 +195,7 @@ async function applyNotionPage(
             description: fields.description,
             status: fields.status,
             priority: fields.priority,
+            type: fields.type,
             dueAt: fields.dueAt,
             notionSyncedAt: lastEdited,
             updatedAt: new Date(),
@@ -200,6 +210,7 @@ async function applyNotionPage(
             description: fields.description,
             status: fields.status,
             priority: fields.priority,
+            type: fields.type,
             dueAt: fields.dueAt,
             notionPageId: notionPage.id,
             notionSyncedAt: lastEdited,
@@ -215,6 +226,7 @@ async function applyNotionPage(
       description: row.description,
       status: row.status,
       priority: row.priority,
+      type: row.type,
       dueAt: row.dueAt,
       notionPageId: row.notionPageId,
       createdAt: row.createdAt,

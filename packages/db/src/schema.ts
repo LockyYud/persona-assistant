@@ -38,6 +38,9 @@ export const tasks = pgTable(
     priority: text("priority", { enum: ["low", "medium", "high", "urgent"] })
       .notNull()
       .default("medium"),
+    type: text("type", { enum: ["work", "personal", "chore"] })
+      .notNull()
+      .default("personal"),
     dueAt: timestamp("due_at", { withTimezone: true }),
     // Set once a task is mirrored to/from Notion (see notion-sync.ts); null
     // for tasks that have never touched Notion.

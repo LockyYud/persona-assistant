@@ -7,6 +7,7 @@ interface TaskRow {
   title: string;
   status: string;
   priority: string;
+  type: string;
   dueAt: string | null;
 }
 
@@ -28,7 +29,7 @@ export default async function AllTasksPage() {
           <li key={task.id} className="task-card">
             <div className="task-title">{task.title}</div>
             <div className="task-meta">
-              {task.status} · {task.priority}
+              {task.status} · {task.priority} · {task.type}
               {task.dueAt ? ` · due ${new Date(task.dueAt).toLocaleString()}` : ""}
             </div>
           </li>

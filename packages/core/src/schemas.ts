@@ -2,11 +2,13 @@ import { z } from "zod";
 
 export const taskStatusSchema = z.enum(["open", "in_progress", "done", "cancelled"]);
 export const taskPrioritySchema = z.enum(["low", "medium", "high", "urgent"]);
+export const taskTypeSchema = z.enum(["work", "personal", "chore"]);
 
 export const createTaskInputSchema = z.object({
   title: z.string().min(1).max(200),
   description: z.string().max(2000).optional(),
   priority: taskPrioritySchema.default("medium"),
+  type: taskTypeSchema.default("personal"),
   dueAt: z.string().datetime().optional(),
 });
 export type CreateTaskInput = z.infer<typeof createTaskInputSchema>;
@@ -17,6 +19,7 @@ export const updateTaskInputSchema = z.object({
   description: z.string().max(2000).nullable().optional(),
   status: taskStatusSchema.optional(),
   priority: taskPrioritySchema.optional(),
+  type: taskTypeSchema.optional(),
   dueAt: z.string().datetime().nullable().optional(),
 });
 export type UpdateTaskInput = z.infer<typeof updateTaskInputSchema>;
