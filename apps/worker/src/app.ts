@@ -50,9 +50,9 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     },
   );
 
-  const taskService = new DrizzleTaskService(db);
-  const reminderService = new DrizzleReminderService(db);
   const notion = config.notionApiKey ? new NotionClient(config.notionApiKey) : undefined;
+  const taskService = new DrizzleTaskService(db, notion, config.notionTasksDatabaseId);
+  const reminderService = new DrizzleReminderService(db);
   const tavily = config.tavilyApiKey ? new TavilyClient(config.tavilyApiKey) : undefined;
   const agentRuntime = new OpenAICompatibleAgentAdapter(
     db,
@@ -448,7 +448,13 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       return reply.code(401).send({ error: "invalid signature" });
     }
 
-    const result = await runTick(db, notificationChannel, resolveChatId);
+    const result = await runTick(
+      db,
+      notificationChannel,
+      resolveChatId,
+      notion,
+      config.notionTasksDatabaseId,
+    );
     return result;
   });
 

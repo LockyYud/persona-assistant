@@ -8,6 +8,14 @@ export interface NotionSearchResult {
   url: string;
 }
 
+/** Raw Notion page object, kept loose since only a few fields are consumed. */
+export interface NotionPage {
+  id: string;
+  url: string;
+  last_edited_time: string;
+  properties: Record<string, unknown>;
+}
+
 export class NotionClient {
   constructor(private readonly apiKey: string) {}
 
@@ -69,5 +77,49 @@ export class NotionClient {
       .join("\n");
 
     return { title, content };
+  }
+
+  /**
+   * Pages from a database, newest-edited first. Notion's query API can't
+   * filter by last_edited_time directly, so callers paginate this sorted
+   * list themselves and stop once they reach a page older than their cursor
+   * (see notion-sync.ts).
+   */
+  async queryDatabase(
+    databaseId: string,
+    opts: { pageSize?: number; startCursor?: string } = {},
+  ): Promise<{ pages: NotionPage[]; nextCursor: string | null } | { error: string }> {
+    const resp = await this.request("POST", `/databases/${databaseId.replace(/-/g, "")}/query`, {
+      page_size: opts.pageSize ?? 20,
+      start_cursor: opts.startCursor,
+      sorts: [{ timestamp: "last_edited_time", direction: "descending" }],
+    });
+    if (resp.error) return { error: resp.error };
+
+    return {
+      pages: resp.results ?? [],
+      nextCursor: resp.has_more ? (resp.next_cursor ?? null) : null,
+    };
+  }
+
+  async createPage(
+    databaseId: string,
+    properties: Record<string, unknown>,
+  ): Promise<NotionPage | { error: string }> {
+    const resp = await this.request("POST", "/pages", {
+      parent: { database_id: databaseId.replace(/-/g, "") },
+      properties,
+    });
+    if (resp.error) return { error: resp.error };
+    return resp;
+  }
+
+  async updatePage(
+    pageId: string,
+    properties: Record<string, unknown>,
+  ): Promise<NotionPage | { error: string }> {
+    const resp = await this.request("PATCH", `/pages/${pageId.replace(/-/g, "")}`, { properties });
+    if (resp.error) return { error: resp.error };
+    return resp;
   }
 }

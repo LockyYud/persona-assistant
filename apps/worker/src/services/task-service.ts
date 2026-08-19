@@ -9,7 +9,9 @@ import type {
   TaskService,
   UpdateTaskInput,
 } from "@persona/core";
+import type { NotionClient } from "@persona/integrations";
 import { cancelAutoReminders, deriveTaskReminders } from "./reminder-derivation.js";
+import { pushTaskToNotion } from "./notion-sync.js";
 
 // Unscheduled tasks aren't time-bounded, so a very old backlog could grow
 // without limit — cap the returned list; unscheduledCount stays the true total.
@@ -28,16 +30,30 @@ function toDomainTask(row: typeof schema.tasks.$inferSelect): Task {
     status: row.status,
     priority: row.priority,
     dueAt: row.dueAt,
+    notionPageId: row.notionPageId,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   };
 }
 
 export class DrizzleTaskService implements TaskService {
-  constructor(private readonly db: Database) {}
+  constructor(
+    private readonly db: Database,
+    // When both are set, task writes are best-effort mirrored to Notion
+    // (see notion-sync.ts) — a single shared database, since this app is
+    // single-tenant. Inbound Notion edits are pulled back by the scheduler
+    // tick, not here.
+    private readonly notion?: NotionClient,
+    private readonly notionDatabaseId?: string,
+  ) {}
+
+  private async syncToNotion(task: Task): Promise<Task> {
+    if (!this.notion || !this.notionDatabaseId) return task;
+    return pushTaskToNotion(this.db, this.notion, this.notionDatabaseId, task);
+  }
 
   async createTask(userId: string, input: CreateTaskInput): Promise<Task> {
-    return this.db.transaction(async (tx) => {
+    const task = await this.db.transaction(async (tx) => {
       const [row] = await tx
         .insert(schema.tasks)
         .values({
@@ -54,10 +70,11 @@ export class DrizzleTaskService implements TaskService {
       await deriveTaskReminders(tx, task);
       return task;
     });
+    return this.syncToNotion(task);
   }
 
   async updateTask(userId: string, input: UpdateTaskInput): Promise<Task> {
-    return this.db.transaction(async (tx) => {
+    const task = await this.db.transaction(async (tx) => {
       const updates: Partial<typeof schema.tasks.$inferInsert> = { updatedAt: new Date() };
       if (input.title !== undefined) updates.title = input.title;
       if (input.description !== undefined) updates.description = input.description;
@@ -76,10 +93,11 @@ export class DrizzleTaskService implements TaskService {
       await deriveTaskReminders(tx, task);
       return task;
     });
+    return this.syncToNotion(task);
   }
 
   async completeTask(userId: string, input: CompleteTaskInput): Promise<Task> {
-    return this.db.transaction(async (tx) => {
+    const task = await this.db.transaction(async (tx) => {
       const [row] = await tx
         .update(schema.tasks)
         .set({ status: "done", updatedAt: new Date() })
@@ -90,6 +108,7 @@ export class DrizzleTaskService implements TaskService {
       await cancelAutoReminders(tx, row.id);
       return toDomainTask(row);
     });
+    return this.syncToNotion(task);
   }
 
   async listTasks(userId: string, input: ListTasksInput): Promise<Task[]> {

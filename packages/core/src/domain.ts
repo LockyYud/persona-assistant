@@ -9,6 +9,7 @@ export interface Task {
   status: TaskStatus;
   priority: TaskPriority;
   dueAt: Date | null;
+  notionPageId: string | null;
   createdAt: Date;
   updatedAt: Date;
 }

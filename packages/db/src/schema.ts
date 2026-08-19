@@ -15,27 +15,43 @@ export const users = pgTable("users", {
   email: text("email").notNull().unique(),
   timezone: text("timezone").notNull().default("Asia/Bangkok"),
   telegramChatId: text("telegram_chat_id"),
+  // Cursor for the inbound Notion->Postgres task sync (see
+  // notion-sync.ts): the last_edited_time of the most recent Notion page
+  // already applied, so each sync pass only re-fetches what changed since.
+  notionSyncCursor: timestamp("notion_sync_cursor", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
-export const tasks = pgTable("tasks", {
-  id: uuid("id").primaryKey().defaultRandom(),
-  userId: uuid("user_id")
-    .notNull()
-    .references(() => users.id, { onDelete: "cascade" }),
-  title: text("title").notNull(),
-  description: text("description"),
-  status: text("status", { enum: ["open", "in_progress", "done", "cancelled"] })
-    .notNull()
-    .default("open"),
-  priority: text("priority", { enum: ["low", "medium", "high", "urgent"] })
-    .notNull()
-    .default("medium"),
-  dueAt: timestamp("due_at", { withTimezone: true }),
-  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
-});
+export const tasks = pgTable(
+  "tasks",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    title: text("title").notNull(),
+    description: text("description"),
+    status: text("status", { enum: ["open", "in_progress", "done", "cancelled"] })
+      .notNull()
+      .default("open"),
+    priority: text("priority", { enum: ["low", "medium", "high", "urgent"] })
+      .notNull()
+      .default("medium"),
+    dueAt: timestamp("due_at", { withTimezone: true }),
+    // Set once a task is mirrored to/from Notion (see notion-sync.ts); null
+    // for tasks that have never touched Notion.
+    notionPageId: text("notion_page_id"),
+    notionSyncedAt: timestamp("notion_synced_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    notionPageIdUnique: uniqueIndex("tasks_notion_page_id_idx")
+      .on(table.notionPageId)
+      .where(sql`${table.notionPageId} is not null`),
+  }),
+);
 
 export const reminders = pgTable(
   "reminders",

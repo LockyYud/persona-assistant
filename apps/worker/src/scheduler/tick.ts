@@ -1,7 +1,8 @@
 import { and, eq, lte, or } from "drizzle-orm";
 import { schema, type Database } from "@persona/db";
-import type { NotificationChannel } from "@persona/integrations";
+import type { NotificationChannel, NotionClient } from "@persona/integrations";
 import { computeNextOccurrence } from "./rrule.js";
+import { syncNotionTasksForUser } from "../services/notion-sync.js";
 
 const LEASE_DURATION_MS = 2 * 60 * 1000;
 const MAX_OUTBOX_ATTEMPTS = 5;
@@ -12,6 +13,24 @@ export interface TickResult {
   claimedReminders: number;
   dispatched: number;
   failed: number;
+  notionSynced: number;
+}
+
+/** Pulls Notion task edits into Postgres for every user, single shared database (this app is single-tenant). */
+async function syncNotionTasks(
+  db: Database,
+  notion: NotionClient | undefined,
+  databaseId: string | undefined,
+): Promise<number> {
+  if (!notion || !databaseId) return 0;
+
+  const users = await db.select().from(schema.users);
+  let synced = 0;
+  for (const user of users) {
+    const result = await syncNotionTasksForUser(db, notion, databaseId, user.id);
+    synced += result.synced;
+  }
+  return synced;
 }
 
 function backoffMs(attempts: number): number {
@@ -214,10 +233,13 @@ export async function runTick(
   db: Database,
   channel: NotificationChannel,
   getChatId: (triggerRunId: string) => Promise<string | null>,
+  notion?: NotionClient,
+  notionTasksDatabaseId?: string,
 ): Promise<TickResult> {
   const recovered = await recoverExpiredLeases(db);
+  const notionSynced = await syncNotionTasks(db, notion, notionTasksDatabaseId);
   const claimedReminders = await claimDueReminders(db);
   const { dispatched, failed } = await dispatchOutbox(db, channel, getChatId);
 
-  return { recovered, claimedReminders, dispatched, failed };
+  return { recovered, claimedReminders, dispatched, failed, notionSynced };
 }

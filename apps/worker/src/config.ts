@@ -16,6 +16,10 @@ export const config = {
   telegramBotToken: process.env.TELEGRAM_BOT_TOKEN ?? "",
   telegramWebhookSecret: process.env.TELEGRAM_WEBHOOK_SECRET ?? "",
   notionApiKey: process.env.NOTION_API_KEY || undefined,
+  // Notion database that mirrors the task list (see notion-sync.ts). Only
+  // meaningful together with NOTION_API_KEY; unset to keep Notion read-only
+  // (search/get_page tools) without the task sync.
+  notionTasksDatabaseId: process.env.NOTION_TASKS_DATABASE_ID || undefined,
   tavilyApiKey: process.env.TAVILY_API_KEY || undefined,
   llm: {
     apiKey: required("LLM_API_KEY"),

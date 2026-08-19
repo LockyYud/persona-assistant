@@ -108,9 +108,19 @@ curl -X POST "https://api.telegram.org/bot<TELEGRAM_BOT_TOKEN>/setWebhook" \
 - **Notion, as a read-only knowledge tool.** When `NOTION_API_KEY` is set, the
   agent gains `notion_search`/`notion_get_page` tools (both `auto` policy —
   read-only) to look up pages in the user's Notion workspace as context.
-  Deliberately *not* wired into task/reminder management — those stay on
-  Postgres so scheduling/outbox/Telegram delivery keep working. Unset the env
-  var to disable the integration entirely.
+  Unset the env var to disable the integration entirely.
+- **Notion as the task-editing surface, Postgres as the source of truth for
+  scheduling.** When `NOTION_TASKS_DATABASE_ID` is also set, tasks are
+  two-way synced with that database (`apps/worker/src/services/notion-sync.ts`):
+  the scheduler tick pulls in edits made on the Notion side (title, status,
+  priority, due date, description) and re-derives reminders for them exactly
+  like any other task write; every `createTask`/`updateTask`/`completeTask`
+  pushes the result back to its Notion page, creating it on first sync.
+  Postgres — not Notion — stays canonical for anything transactional
+  (reminder derivation, the outbox, idempotent delivery); Notion is a
+  best-effort mirror so the day-to-day editing surface can be Notion's UI
+  instead of this app's. See the property-schema requirements in
+  `.env.example`.
 - **Web search.** When `TAVILY_API_KEY` is set, the agent gains a `web_search`
   tool (`auto` policy) for current-events/internet lookups beyond training
   data. The system prompt also injects the current UTC date/time every turn
@@ -129,4 +139,4 @@ curl -X POST "https://api.telegram.org/bot<TELEGRAM_BOT_TOKEN>/setWebhook" \
 - Deeper observability (structured `request_id`/`agent_run_id`/`trigger_run_id`
   correlation across logs, alerting on DLQ/outbox-failed) beyond the
   `agent_runs` audit table and Fastify's default request logging.
-- Notion/Calendar/Gmail integrations — explicitly phase 2 per the plan.
+- Calendar/Gmail integrations — explicitly phase 2 per the plan.
