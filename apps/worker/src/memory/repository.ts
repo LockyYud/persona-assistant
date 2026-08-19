@@ -42,7 +42,14 @@ export async function loadRecentMessages(
     .orderBy(desc(schema.conversationMessages.createdAt))
     .limit(limit);
 
-  return rows.reverse().map((row): ChatCompletionMessageParam => {
+  const chronological = rows.reverse();
+  // The window can start mid tool-call sequence, cutting off the assistant
+  // message whose tool_calls a leading "tool" row answers — the OpenAI API
+  // rejects a "tool" message with no preceding tool_calls in the same
+  // request, so any such orphans must be dropped before they reach it.
+  while (chronological[0]?.role === "tool") chronological.shift();
+
+  return chronological.map((row): ChatCompletionMessageParam => {
     if (row.role === "tool") {
       return {
         role: "tool",
