@@ -15,14 +15,11 @@ import type {
 import type { NotionClient } from "@persona/integrations";
 import { cancelAutoReminders, deriveTaskReminders } from "./reminder-derivation.js";
 import { pushTaskToNotion } from "./notion-sync.js";
+import { dateKeyInTimezone } from "./local-time.js";
 
 // Unscheduled tasks aren't time-bounded, so a very old backlog could grow
 // without limit — cap the returned list; unscheduledCount stays the true total.
 const UNSCHEDULED_LIST_CAP = 20;
-
-function dateKeyInTimezone(date: Date, timezone: string): string {
-  return new Intl.DateTimeFormat("en-CA", { timeZone: timezone }).format(date);
-}
 
 function toDomainTask(row: typeof schema.tasks.$inferSelect): Task {
   return {

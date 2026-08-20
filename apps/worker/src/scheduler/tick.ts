@@ -3,6 +3,7 @@ import { schema, type Database } from "@persona/db";
 import type { NotificationChannel, NotionClient } from "@persona/integrations";
 import { computeNextOccurrence } from "./rrule.js";
 import { pushProgressToNotion, syncNotionTasksForUser } from "../services/notion-sync.js";
+import { sendDailyBriefings, type DailyBriefingDeps } from "../services/daily-briefing.js";
 
 const LEASE_DURATION_MS = 2 * 60 * 1000;
 const MAX_OUTBOX_ATTEMPTS = 5;
@@ -14,6 +15,7 @@ export interface TickResult {
   dispatched: number;
   failed: number;
   notionSynced: number;
+  briefingsSent: number;
 }
 
 /** Pulls Notion task edits into Postgres for every user, single shared database (this app is single-tenant). */
@@ -239,11 +241,25 @@ export async function runTick(
   getChatId: (triggerRunId: string) => Promise<string | null>,
   notion?: NotionClient,
   notionTasksDatabaseId?: string,
+  briefing?: Omit<DailyBriefingDeps, "db" | "channel">,
 ): Promise<TickResult> {
   const recovered = await recoverExpiredLeases(db);
+  // Notion first: a briefing should reflect edits made in Notion overnight.
   const notionSynced = await syncNotionTasks(db, notion, notionTasksDatabaseId);
   const claimedReminders = await claimDueReminders(db);
   const { dispatched, failed } = await dispatchOutbox(db, channel, getChatId);
 
-  return { recovered, claimedReminders, dispatched, failed, notionSynced };
+  let briefingsSent = 0;
+  if (briefing) {
+    // Self-contained and best-effort: a failure here must not stop reminder
+    // delivery, which is the tick's actual job.
+    try {
+      const result = await sendDailyBriefings({ ...briefing, db, channel });
+      briefingsSent = result.sent;
+    } catch (error) {
+      console.error("Daily briefing pass failed:", error);
+    }
+  }
+
+  return { recovered, claimedReminders, dispatched, failed, notionSynced, briefingsSent };
 }

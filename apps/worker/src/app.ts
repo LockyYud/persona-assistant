@@ -1,5 +1,6 @@
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from "fastify";
 import bcrypt from "bcryptjs";
+import OpenAI from "openai";
 import { eq } from "drizzle-orm";
 import { createDb, schema, type Database } from "@persona/db";
 import {
@@ -79,6 +80,9 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   const reminderService = new DrizzleReminderService(db);
   const tavily = config.tavilyApiKey ? new TavilyClient(config.tavilyApiKey) : undefined;
   const breakdown = new TaskBreakdownService(config.llm, config.llm.breakdownModel);
+  // Own client: the briefing runs from the scheduler tick, with no chat turn
+  // and therefore no agent runtime involved.
+  const briefingClient = new OpenAI({ apiKey: config.llm.apiKey, baseURL: config.llm.baseURL });
   const agentRuntime: AgentRuntime =
     options.agentRuntime ??
     new OpenAICompatibleAgentAdapter(
@@ -537,6 +541,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       resolveChatId,
       notion,
       config.notionTasksDatabaseId,
+      { taskService, client: briefingClient, model: config.llm.model },
     );
     return result;
   });

@@ -1,5 +1,7 @@
 import { sql } from "drizzle-orm";
 import {
+  boolean,
+  date,
   index,
   integer,
   jsonb,
@@ -20,6 +22,16 @@ export const users = pgTable("users", {
   // notion-sync.ts): the last_edited_time of the most recent Notion page
   // already applied, so each sync pass only re-fetches what changed since.
   notionSyncCursor: timestamp("notion_sync_cursor", { withTimezone: true }),
+  // Morning briefing (see services/daily-briefing.ts), in the user's own
+  // timezone above.
+  briefingEnabled: boolean("briefing_enabled").notNull().default(true),
+  briefingHour: integer("briefing_hour").notNull().default(7),
+  briefingMinute: integer("briefing_minute").notNull().default(0),
+  // The *local* calendar date of the last briefing sent, not a timestamp:
+  // "have I already sent today's?" is a question about the user's day, and
+  // storing the day directly makes the check idempotent without any
+  // timezone arithmetic.
+  lastBriefingOn: date("last_briefing_on", { mode: "string" }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });

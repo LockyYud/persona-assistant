@@ -79,11 +79,13 @@ curl -X POST "https://api.telegram.org/bot<TELEGRAM_BOT_TOKEN>/setWebhook" \
   Same `AgentRuntime.chat()` call as the web chat, so it shares the same
   tools, audit trail, conversation history, and memory.
 - **Conversation memory.** `conversation_messages` stores the last 20
-  messages per conversation and replays them on every turn — the web UI
-  keeps its own `conversationId` across calls; Telegram has no such concept,
-  so it reuses the user's most recently active conversation instead of
-  starting fresh every message. Both channels therefore share one continuous
-  thread unless the web client explicitly starts a new one.
+  messages of a thread and replays them on every turn. Note that tool messages
+  occupy that budget too, so one tool-heavy turn can push most of the actual
+  dialogue out of the window. A window can also open mid tool-call sequence,
+  leaving a `tool` message whose `tool_calls` assistant fell outside it — the
+  API rejects that outright, so such orphans are trimmed before the request is
+  built. See the per-thread, per-channel model below for how threads are
+  scoped.
 - **Semantic memory.** After each turn, a second cheap LLM call extracts
   durable facts/preferences worth remembering (ignoring transient chatter)
   into `memories`, keyed by `(userId, key)` so restating a fact updates the
@@ -92,18 +94,17 @@ curl -X POST "https://api.telegram.org/bot<TELEGRAM_BOT_TOKEN>/setWebhook" \
   by importance are injected into the system prompt on every turn.
 - **Tool permission layer, with confirmation kept out of the model's hands.**
   `apps/worker/src/agent/permissions.ts` maps every tool to an `auto` or
-  `confirm` policy (unlisted tools default to `confirm`). The 5 current tools
-  are all `auto` (read/low-risk task and reminder actions). A `confirm`-policy
+  `confirm` policy (unlisted tools default to `confirm`). Reads and low-risk
+  task/reminder writes are `auto`; `createSubtasks` is the first real
+  `confirm` tool, since one breakdown can add up to 20 rows to the user's
+  actual Notion database. A `confirm`-policy
   tool call is intercepted before execution and recorded in
   `approval_requests` instead of running; `ChatResult.pendingApproval` tells
   the channel to show a real confirm UI. There is no LLM-callable
   "confirmAction" tool — the model can only propose and narrate, never
   resolve its own pending approval. The only things that move an approval
   from pending are a Telegram inline-button callback or `POST
-  /approvals/:id/decision` (web), both driven by an actual user click. No
-  current tool needs this yet (all 5 are auto) — it's infrastructure for
-  when a destructive/external tool (delete, send email, Notion write) is
-  added later, and the trust boundary is fixed *before* that happens.
+  /approvals/:id/decision` (web), both driven by an actual user click.
 
 - **Notion, as a read-only knowledge tool.** When `NOTION_API_KEY` is set, the
   agent gains `notion_search`/`notion_get_page` tools (both `auto` policy —
@@ -121,6 +122,24 @@ curl -X POST "https://api.telegram.org/bot<TELEGRAM_BOT_TOKEN>/setWebhook" \
   best-effort mirror so the day-to-day editing surface can be Notion's UI
   instead of this app's. See the property-schema requirements in
   `.env.example`.
+- **A morning briefing, as the one thing that starts a conversation.** Every
+  tick checks whether each user is due their daily briefing in *their* timezone
+  and sends it over Telegram: what's overdue, what's due today, and the next
+  step of anything broken down. The model writes it and opens with what to do
+  first, but the plain rendering of the same data is the fallback, so a failed
+  composition costs wording rather than the whole briefing. A quiet day sends
+  nothing at all — a daily "nothing due" trains the reader to ignore the
+  channel, which costs more than it gives on the days something is wrong.
+  Deliberately *not* on the reminder/outbox pipeline: that path is task-scoped
+  end to end (`reminders.taskId`, `trigger_runs.reminderId` and the chat-id
+  resolver all require a task), and a briefing belongs to no task, so riding it
+  would mean loosening three constraints in the most reliability-critical code
+  here. Instead `users.last_briefing_on` stores the *local calendar date* of
+  the last send: that makes "already sent today?" a question about the user's
+  day with no timezone arithmetic, and writing it only after a successful send
+  means a failure just retries next tick. A missed target time is caught up
+  within 4 hours and then abandoned, so a host that was asleep at 07:00 doesn't
+  deliver "here's your morning" at dinner.
 - **Conversations are per-thread and per-channel.** A `conversations` row is a
   chat thread in the ChatGPT sense: the web app opens one per "New chat",
   Telegram opens one per `/new` (it has no button to click). `channel` keeps the
