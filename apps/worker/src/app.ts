@@ -21,6 +21,11 @@ import {
 } from "./auth/desktop-token.js";
 import { runTick } from "./scheduler/tick.js";
 import { makeChatIdResolver } from "./scheduler/chat-id-resolver.js";
+import {
+  createConversation,
+  listConversations,
+  loadConversationTranscript,
+} from "./memory/repository.js";
 
 export interface BuildAppOptions {
   db?: Database;
@@ -181,6 +186,27 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     const result = await agentRuntime.chat(parsed.data);
     return result;
   });
+
+  app.get<{ Querystring: { userId: string } }>("/conversations", async (request, reply) => {
+    const { userId } = request.query;
+    if (!userId) return reply.code(400).send({ error: "userId is required" });
+
+    const conversations = await listConversations(db, userId);
+    return { conversations };
+  });
+
+  app.get<{ Params: { id: string }; Querystring: { userId: string } }>(
+    "/conversations/:id/messages",
+    async (request, reply) => {
+      const { userId } = request.query;
+      if (!userId) return reply.code(400).send({ error: "userId is required" });
+
+      const messages = await loadConversationTranscript(db, userId, request.params.id);
+      if (!messages) return reply.code(404).send({ error: "conversation not found" });
+
+      return { messages };
+    },
+  );
 
   app.get<{ Querystring: { userId: string; status?: string } }>("/tasks", async (request, reply) => {
     const { userId, status } = request.query;
@@ -421,7 +447,25 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       return reply.code(200).send({ ok: true });
     }
 
-    const result = await agentRuntime.chat({ userId: user.id, message: text });
+    // Telegram has no "New chat" button, so a slash command stands in for it.
+    // Creating the thread is enough to switch to it: the next message carries
+    // no conversation id, and "continue my latest Telegram thread" now
+    // resolves to this brand-new empty one.
+    const command = text.trim().toLowerCase().split(/[\s@]/)[0];
+    if (command === "/new" || command === "/newchat") {
+      await createConversation(db, user.id, "telegram");
+      await notificationChannel.send({
+        chatId: String(chatId),
+        text: "🆕 Đã bắt đầu hội thoại mới. Những tin trước đó sẽ không còn được dùng làm ngữ cảnh.",
+      });
+      return reply.code(200).send({ ok: true });
+    }
+
+    const result = await agentRuntime.chat({
+      userId: user.id,
+      message: text,
+      channel: "telegram",
+    });
 
     if (result.pendingApproval) {
       await notificationChannel.sendWithApprovalButtons(

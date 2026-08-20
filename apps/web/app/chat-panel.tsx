@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 
 interface PendingApproval {
   approvalId: string;
@@ -15,11 +15,71 @@ interface ChatEntry {
   resolved?: "approved" | "rejected";
 }
 
+interface ConversationRow {
+  id: string;
+  title: string | null;
+  channel: "web" | "telegram";
+  messageCount: number;
+  updatedAt: string;
+}
+
+function conversationLabel(conversation: ConversationRow): string {
+  // A thread is listed as soon as it has messages, which can be before the
+  // title call has finished — fall back rather than showing a blank row.
+  return conversation.title?.trim() || "Hội thoại chưa đặt tên";
+}
+
 export function ChatPanel() {
   const [entries, setEntries] = useState<ChatEntry[]>([]);
   const [input, setInput] = useState("");
   const [conversationId, setConversationId] = useState<string | undefined>();
+  const [conversations, setConversations] = useState<ConversationRow[]>([]);
   const [pending, setPending] = useState(false);
+  const [loadingHistory, setLoadingHistory] = useState(false);
+  // Distinguishes "the user clicked New chat" from "nothing sent yet": without
+  // it, the first message would continue the most recent thread instead of
+  // opening a new one.
+  const [forceNew, setForceNew] = useState(false);
+
+  const refreshConversations = useCallback(async () => {
+    try {
+      const response = await fetch("/api/conversations");
+      if (!response.ok) return;
+      const data = (await response.json()) as { conversations: ConversationRow[] };
+      setConversations(data.conversations ?? []);
+    } catch {
+      // A failed sidebar refresh must not disturb the conversation itself.
+    }
+  }, []);
+
+  useEffect(() => {
+    void refreshConversations();
+  }, [refreshConversations]);
+
+  async function openConversation(id: string) {
+    if (id === conversationId || pending) return;
+    setLoadingHistory(true);
+    try {
+      const response = await fetch(`/api/conversations/${id}/messages`);
+      if (!response.ok) return;
+      const data = (await response.json()) as {
+        messages: { role: "user" | "assistant"; content: string }[];
+      };
+      setEntries(data.messages.map((m) => ({ role: m.role, text: m.content })));
+      setConversationId(id);
+      setForceNew(false);
+    } finally {
+      setLoadingHistory(false);
+    }
+  }
+
+  function startNewChat() {
+    if (pending) return;
+    setEntries([]);
+    setConversationId(undefined);
+    setForceNew(true);
+    setInput("");
+  }
 
   async function sendMessage() {
     const message = input.trim();
@@ -33,10 +93,15 @@ export function ChatPanel() {
       const response = await fetch("/api/chat", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ message, conversationId }),
+        body: JSON.stringify({
+          message,
+          conversationId,
+          startNewConversation: forceNew || undefined,
+        }),
       });
       const data = await response.json();
       setConversationId(data.conversationId);
+      setForceNew(false);
       setEntries((prev) => [
         ...prev,
         {
@@ -45,6 +110,7 @@ export function ChatPanel() {
           pendingApproval: data.pendingApproval ?? undefined,
         },
       ]);
+      void refreshConversations();
     } catch {
       setEntries((prev) => [...prev, { role: "assistant", text: "Error sending message." }]);
     } finally {
@@ -70,49 +136,77 @@ export function ChatPanel() {
   }
 
   return (
-    <section className="chat-card">
-      <div className="chat-messages">
-        {entries.length === 0 && (
-          <p className="chat-empty">Nhắn gì đó để bắt đầu — ví dụ &quot;tạo task mua sữa mai 8h&quot;.</p>
-        )}
-        {entries.map((entry, index) => (
-          <div key={index} className={`chat-row ${entry.role}`}>
-            <span className="bubble">{entry.text}</span>
-            {entry.pendingApproval && !entry.resolved && (
-              <div className="approval-actions">
-                <button onClick={() => decide(index, "approved")} className="btn btn-primary">
-                  ✅ Xác nhận
-                </button>
-                <button onClick={() => decide(index, "rejected")} className="btn btn-danger">
-                  ❌ Huỷ
-                </button>
-              </div>
-            )}
-            {entry.resolved && (
-              <div className="approval-resolved">
-                {entry.resolved === "approved" ? "Đã xác nhận." : "Đã huỷ."}
-              </div>
-            )}
-          </div>
-        ))}
-      </div>
-      <form
-        onSubmit={(event) => {
-          event.preventDefault();
-          void sendMessage();
-        }}
-        className="chat-form"
-      >
-        <input
-          value={input}
-          onChange={(event) => setInput(event.target.value)}
-          placeholder="Nhắc tôi..."
-          className="chat-input"
-        />
-        <button type="submit" disabled={pending} className="btn btn-primary">
-          Send
+    <div className="chat-layout">
+      <aside className="conversation-sidebar">
+        <button type="button" className="btn btn-primary new-chat-btn" onClick={startNewChat}>
+          + Hội thoại mới
         </button>
-      </form>
-    </section>
+        <ul className="conversation-list">
+          {conversations.map((conversation) => (
+            <li key={conversation.id}>
+              <button
+                type="button"
+                onClick={() => void openConversation(conversation.id)}
+                className={`conversation-item${conversation.id === conversationId ? " active" : ""}`}
+              >
+                <span className="conversation-title">{conversationLabel(conversation)}</span>
+                {conversation.channel === "telegram" && (
+                  <span className="conversation-badge">Telegram</span>
+                )}
+              </button>
+            </li>
+          ))}
+          {conversations.length === 0 && (
+            <li className="conversation-empty">Chưa có hội thoại nào.</li>
+          )}
+        </ul>
+      </aside>
+
+      <section className="chat-card">
+        <div className="chat-messages">
+          {entries.length === 0 && !loadingHistory && (
+            <p className="chat-empty">Nhắn gì đó để bắt đầu — ví dụ &quot;tạo task mua sữa mai 8h&quot;.</p>
+          )}
+          {loadingHistory && <p className="chat-empty">Đang tải hội thoại…</p>}
+          {entries.map((entry, index) => (
+            <div key={index} className={`chat-row ${entry.role}`}>
+              <span className="bubble">{entry.text}</span>
+              {entry.pendingApproval && !entry.resolved && (
+                <div className="approval-actions">
+                  <button onClick={() => decide(index, "approved")} className="btn btn-primary">
+                    ✅ Xác nhận
+                  </button>
+                  <button onClick={() => decide(index, "rejected")} className="btn btn-danger">
+                    ❌ Huỷ
+                  </button>
+                </div>
+              )}
+              {entry.resolved && (
+                <div className="approval-resolved">
+                  {entry.resolved === "approved" ? "Đã xác nhận." : "Đã huỷ."}
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+        <form
+          onSubmit={(event) => {
+            event.preventDefault();
+            void sendMessage();
+          }}
+          className="chat-form"
+        >
+          <input
+            value={input}
+            onChange={(event) => setInput(event.target.value)}
+            placeholder={forceNew ? "Bắt đầu hội thoại mới…" : "Nhắc tôi..."}
+            className="chat-input"
+          />
+          <button type="submit" disabled={pending} className="btn btn-primary">
+            Send
+          </button>
+        </form>
+      </section>
+    </div>
   );
 }

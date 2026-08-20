@@ -78,6 +78,18 @@ export function notionPageToTaskFields(page: NotionPage): NotionTaskFields {
 }
 
 /**
+ * True for a Notion row with no title at all — almost always the blank row
+ * Notion leaves at the bottom of a table, or one someone started and
+ * abandoned. Syncing those in produces "(untitled)" tasks that clutter the
+ * list and can never be acted on, so the sync skips them.
+ */
+export function isBlankNotionPage(page: NotionPage): boolean {
+  const properties = page.properties as Record<string, NotionProperty>;
+  const titleProp = Object.values(properties).find((p) => p?.type === "title");
+  return plainText(titleProp?.title).trim().length === 0;
+}
+
+/**
  * Builds the Notion property payload to mirror a task onto its page.
  *
  * `parentNotionPageId` has to be passed in rather than read off the task,
@@ -252,7 +264,11 @@ export async function syncNotionTasksForUser(
         break;
       }
 
+      // Advance past a skipped page too, so an untitled row isn't re-examined
+      // on every single pass forever.
       if (!newestSeen || lastEdited.getTime() > newestSeen.getTime()) newestSeen = lastEdited;
+      if (isBlankNotionPage(notionPage)) continue;
+
       await applyNotionPage(db, notionPage, userId, lastEdited);
       // Parent links are resolved after the whole batch: a step's page can be
       // applied before the parent page it points at exists in Postgres, so

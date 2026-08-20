@@ -121,6 +121,22 @@ curl -X POST "https://api.telegram.org/bot<TELEGRAM_BOT_TOKEN>/setWebhook" \
   best-effort mirror so the day-to-day editing surface can be Notion's UI
   instead of this app's. See the property-schema requirements in
   `.env.example`.
+- **Conversations are per-thread and per-channel.** A `conversations` row is a
+  chat thread in the ChatGPT sense: the web app opens one per "New chat",
+  Telegram opens one per `/new` (it has no button to click). `channel` keeps the
+  two surfaces apart, because "continue where I left off" has to mean the latest
+  *web* thread on the web and the latest *Telegram* thread on Telegram —
+  without that scoping, a Telegram message lands in whatever thread the browser
+  used last, which is exactly how the two used to share one endless thread.
+  Threads from both channels are listed together in the web sidebar, labelled.
+  An explicit `conversationId` is only honoured if it belongs to the caller;
+  otherwise a fresh thread is started rather than trusting a client-supplied id.
+  Omitting the id means "continue", so "New chat" sends an explicit
+  `startNewConversation` — and since both entry points create the row before
+  there's anything in it, the thread list hides threads with no messages.
+  Titles come from a one-off LLM call after the first exchange (once per
+  thread, not per message); a thread whose titling failed simply shows a
+  placeholder.
 - **Task progress, counted rather than typed in.** A task can have subtasks
   (steps) — real task rows with a `parentTaskId`, mirrored to Notion's `Parent`
   self-relation. Progress is always *derived* (`done/total` over the steps) and

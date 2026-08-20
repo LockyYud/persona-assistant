@@ -1,5 +1,6 @@
 import OpenAI from "openai";
 import type { ChatCompletionMessageParam } from "openai/resources/index.js";
+import { eq } from "drizzle-orm";
 import { schema, type Database } from "@persona/db";
 import type { NotionClient, TavilyClient } from "@persona/integrations";
 import type {
@@ -23,13 +24,24 @@ import {
   loadRecentMessages,
   loadTopMemories,
   resolveConversationId,
+  setConversationTitleIfEmpty,
+  touchConversation,
   touchMemoriesLastUsed,
   upsertMemory,
 } from "../memory/repository.js";
+import { generateConversationTitle } from "./conversation-title.js";
 
 const BASE_SYSTEM_PROMPT = `You are Duy's personal assistant. You can create and manage tasks
 and reminders on his behalf using the provided tools. Always confirm what you did in plain,
 concise language. Times you pass to tools must be ISO-8601 UTC datetimes.
+
+His task list and his Notion "Tasks" database are the SAME LIST, kept in sync both ways — the
+task tools already see everything in that Notion database. So for anything about his tasks
+("what are my tasks", "check my tasks", "what's on my plate", "my tasks in Notion"), use
+listNowTasks or listTasks. Never use notion_search or notion_get_page to hunt for tasks: those
+are only for his other Notion notes and documents, and using them for tasks returns worse
+answers, slower. Prefer listNowTasks when he asks what needs attention, and listTasks when he
+wants the full list or a specific status.
 
 Some actions require the user's explicit confirmation before they run. When a tool result says
 an action is pending confirmation, tell the user what it would do and that a Confirm/Cancel
@@ -83,7 +95,11 @@ export class OpenAICompatibleAgentAdapter implements AgentRuntime {
   }
 
   async chat(input: ChatMessageInput): Promise<ChatResult> {
-    const conversationId = await resolveConversationId(this.db, input.userId, input.conversationId);
+    const conversationId = await resolveConversationId(this.db, input.userId, {
+      conversationId: input.conversationId,
+      channel: input.channel ?? "web",
+      startNew: input.startNewConversation,
+    });
 
     const history = await loadRecentMessages(this.db, conversationId);
     const memories = await loadTopMemories(this.db, input.userId);
@@ -268,6 +284,9 @@ export class OpenAICompatibleAgentAdapter implements AgentRuntime {
         ? assistantReplyText.content
         : "";
 
+    await touchConversation(this.db, conversationId);
+    await this.titleConversationIfNeeded(conversationId, userMessage, replyText);
+
     const existingKeys = await listMemoryKeys(this.db, userId);
     const candidates = await extractMemoryCandidates(
       this.client,
@@ -279,6 +298,31 @@ export class OpenAICompatibleAgentAdapter implements AgentRuntime {
     for (const candidate of candidates) {
       await upsertMemory(this.db, userId, candidate, "conversation");
     }
+  }
+
+  /**
+   * Names a thread from its first exchange. Checked before calling the model
+   * so the extra request happens once per thread rather than once per message.
+   */
+  private async titleConversationIfNeeded(
+    conversationId: string,
+    userMessage: string,
+    replyText: string,
+  ): Promise<void> {
+    const [conversation] = await this.db
+      .select({ title: schema.conversations.title })
+      .from(schema.conversations)
+      .where(eq(schema.conversations.id, conversationId));
+
+    if (!conversation || conversation.title) return;
+
+    const title = await generateConversationTitle(
+      this.client,
+      this.model,
+      userMessage,
+      replyText,
+    );
+    if (title) await setConversationTitleIfEmpty(this.db, conversationId, title);
   }
 
   async runTriggeredWorkflow(_input: TriggeredWorkflowInput): Promise<void> {

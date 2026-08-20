@@ -2,6 +2,10 @@ export interface ChatMessageInput {
   userId: string;
   message: string;
   conversationId?: string;
+  /** Threads are kept per channel, so "continue my last thread" means the right one. */
+  channel?: "web" | "telegram";
+  /** Set by an explicit "New chat"; omitting conversationId only means "continue". */
+  startNewConversation?: boolean;
 }
 
 export interface PendingApproval {

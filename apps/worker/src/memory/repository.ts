@@ -1,31 +1,188 @@
-import { randomUUID } from "node:crypto";
-import { and, desc, eq, inArray } from "drizzle-orm";
+import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import { schema, type Database } from "@persona/db";
 import type { ChatCompletionMessageParam } from "openai/resources/index.js";
 
 export type StoredMessageRole = "user" | "assistant" | "tool";
+export type ConversationChannel = "web" | "telegram";
+
+export async function createConversation(
+  db: Database,
+  userId: string,
+  channel: ConversationChannel,
+): Promise<string> {
+  const [row] = await db
+    .insert(schema.conversations)
+    .values({ userId, channel })
+    .returning({ id: schema.conversations.id });
+
+  if (!row) throw new Error("Failed to create conversation");
+  return row.id;
+}
 
 /**
- * Resolves which conversation a new message belongs to. The web client
- * tracks its own conversationId across turns; channels that can't (Telegram)
- * omit it, so we reuse the user's most recently active conversation instead
- * of starting a fresh one on every message.
+ * Decides which thread a new message joins.
+ *
+ * An explicit id wins, but only if it really belongs to this user — the id
+ * arrives from a client, so trusting it blindly would let one account append
+ * to another's thread.
+ *
+ * Otherwise the caller is saying "continue where I left off", and the answer
+ * is scoped to the channel: Telegram continues the latest Telegram thread and
+ * the web app the latest web one. Without that scoping, sending a Telegram
+ * message would land in whatever thread the web app happened to use last.
  */
 export async function resolveConversationId(
   db: Database,
   userId: string,
-  conversationId?: string,
+  options: {
+    conversationId?: string;
+    channel: ConversationChannel;
+    startNew?: boolean;
+  },
 ): Promise<string> {
-  if (conversationId) return conversationId;
+  if (options.startNew) return createConversation(db, userId, options.channel);
 
-  const [row] = await db
-    .select({ conversationId: schema.conversationMessages.conversationId })
-    .from(schema.conversationMessages)
-    .where(eq(schema.conversationMessages.userId, userId))
-    .orderBy(desc(schema.conversationMessages.createdAt))
+  if (options.conversationId) {
+    const [owned] = await db
+      .select({ id: schema.conversations.id })
+      .from(schema.conversations)
+      .where(
+        and(
+          eq(schema.conversations.id, options.conversationId),
+          eq(schema.conversations.userId, userId),
+        ),
+      );
+    if (owned) return owned.id;
+    // An unknown or someone else's id is treated as "start fresh" rather than
+    // an error: the caller still gets a working thread, and the real id comes
+    // back in the response.
+    return createConversation(db, userId, options.channel);
+  }
+
+  const [latest] = await db
+    .select({ id: schema.conversations.id })
+    .from(schema.conversations)
+    .where(
+      and(eq(schema.conversations.userId, userId), eq(schema.conversations.channel, options.channel)),
+    )
+    .orderBy(desc(schema.conversations.updatedAt))
     .limit(1);
 
-  return row?.conversationId ?? randomUUID();
+  return latest?.id ?? createConversation(db, userId, options.channel);
+}
+
+export interface ConversationSummary {
+  id: string;
+  title: string | null;
+  channel: ConversationChannel;
+  messageCount: number;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+/**
+ * Threads for the sidebar, most recent first. Empty ones are left out: both
+ * "New chat" and Telegram's /new create a thread before there's anything in
+ * it, and an empty row in the list is just noise.
+ */
+export async function listConversations(
+  db: Database,
+  userId: string,
+  limit = 50,
+): Promise<ConversationSummary[]> {
+  const rows = await db
+    .select({
+      id: schema.conversations.id,
+      title: schema.conversations.title,
+      channel: schema.conversations.channel,
+      createdAt: schema.conversations.createdAt,
+      updatedAt: schema.conversations.updatedAt,
+      messageCount: sql<number>`count(${schema.conversationMessages.id})::int`,
+    })
+    .from(schema.conversations)
+    .leftJoin(
+      schema.conversationMessages,
+      eq(schema.conversationMessages.conversationId, schema.conversations.id),
+    )
+    .where(eq(schema.conversations.userId, userId))
+    .groupBy(
+      schema.conversations.id,
+      schema.conversations.title,
+      schema.conversations.channel,
+      schema.conversations.createdAt,
+      schema.conversations.updatedAt,
+    )
+    .having(sql`count(${schema.conversationMessages.id}) > 0`)
+    .orderBy(desc(schema.conversations.updatedAt))
+    .limit(limit);
+
+  return rows;
+}
+
+export interface ConversationTranscriptMessage {
+  role: "user" | "assistant";
+  content: string;
+  createdAt: Date;
+}
+
+/**
+ * A thread's history for replaying it in the UI, oldest first. Tool traffic is
+ * left out — it's part of how an answer was produced, not part of the
+ * conversation as the user experienced it. Assistant turns whose only content
+ * was a tool call have nothing to show and are dropped too.
+ *
+ * Returns null when the thread isn't this user's, so the caller can 404
+ * instead of leaking whether the id exists.
+ */
+export async function loadConversationTranscript(
+  db: Database,
+  userId: string,
+  conversationId: string,
+): Promise<ConversationTranscriptMessage[] | null> {
+  const [conversation] = await db
+    .select({ id: schema.conversations.id })
+    .from(schema.conversations)
+    .where(
+      and(eq(schema.conversations.id, conversationId), eq(schema.conversations.userId, userId)),
+    );
+  if (!conversation) return null;
+
+  const rows = await db
+    .select()
+    .from(schema.conversationMessages)
+    .where(eq(schema.conversationMessages.conversationId, conversationId))
+    .orderBy(schema.conversationMessages.createdAt);
+
+  return rows
+    .filter(
+      (row): row is typeof row & { content: string } =>
+        (row.role === "user" || row.role === "assistant") && !!row.content?.trim(),
+    )
+    .map((row) => ({
+      role: row.role as "user" | "assistant",
+      content: row.content,
+      createdAt: row.createdAt,
+    }));
+}
+
+/** Bumps last-activity so the thread list and channel lookup stay ordered by use. */
+export async function touchConversation(db: Database, conversationId: string): Promise<void> {
+  await db
+    .update(schema.conversations)
+    .set({ updatedAt: new Date() })
+    .where(eq(schema.conversations.id, conversationId));
+}
+
+/** Sets a thread's title, but never overwrites one it already has. */
+export async function setConversationTitleIfEmpty(
+  db: Database,
+  conversationId: string,
+  title: string,
+): Promise<void> {
+  await db
+    .update(schema.conversations)
+    .set({ title })
+    .where(and(eq(schema.conversations.id, conversationId), sql`${schema.conversations.title} is null`));
 }
 
 const MESSAGE_WINDOW = 20;

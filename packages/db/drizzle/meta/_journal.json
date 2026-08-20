@@ -43,6 +43,13 @@
       "when": 1787158264034,
       "tag": "0005_violet_mindworm",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1787208958251,
+      "tag": "0006_safe_obadiah_stane",
+      "breakpoints": true
     }
   ]
 }

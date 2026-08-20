@@ -36,8 +36,18 @@ export function buildToolDefinitions(
       type: "function",
       function: {
         name: "listTasks",
-        description: "List the user's tasks, optionally filtered by status.",
+        description:
+          "List the user's tasks (the same list as their Notion Tasks database), optionally filtered by status. Returns top-level tasks with their step counts. Use this for the full list; use listNowTasks for what needs attention now.",
         parameters: zodToJsonSchema(listTasksInputSchema) as Record<string, unknown>,
+      },
+    },
+    {
+      type: "function",
+      function: {
+        name: "listNowTasks",
+        description:
+          "The user's tasks that need attention, already bucketed into overdue / due today / next up, plus any with no due date. This is the right tool for open questions like 'check my tasks', 'what should I do', 'what's on my plate' — including when they mention Notion, since it is the same list.",
+        parameters: { type: "object", properties: {}, additionalProperties: false },
       },
     },
     {
@@ -106,7 +116,7 @@ export function buildToolDefinitions(
         function: {
           name: "notion_search",
           description:
-            "Search the user's Notion workspace for pages and databases matching a query. Use when the user asks about notes, docs, or info that might be stored in Notion.",
+            "Search the user's Notion workspace for notes and documents. NOT for tasks — the user's tasks are already available through listNowTasks/listTasks, which read the same Notion database; use those instead even if the user says 'Notion'.",
           parameters: {
             type: "object",
             properties: {
@@ -122,7 +132,7 @@ export function buildToolDefinitions(
         function: {
           name: "notion_get_page",
           description:
-            "Get the text content of a Notion page by its ID. Use after notion_search to read a specific page's content.",
+            "Get the text content of one Notion page by its ID, after notion_search located it. Reads a single page — never call it repeatedly to sweep a list of pages, and never to read tasks.",
           parameters: {
             type: "object",
             properties: {
@@ -188,6 +198,9 @@ export async function executeTool(
     case "listTasks": {
       const input = listTasksInputSchema.parse(rawArgs);
       return ctx.taskService.listTasks(ctx.userId, input);
+    }
+    case "listNowTasks": {
+      return ctx.taskService.listNowTasks(ctx.userId);
     }
     case "updateTask": {
       const input = updateTaskInputSchema.parse(rawArgs);

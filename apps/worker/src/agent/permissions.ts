@@ -11,6 +11,7 @@ export type ToolPolicy = "auto" | "confirm";
 const TOOL_POLICIES: Record<string, ToolPolicy> = {
   createTask: "auto",
   listTasks: "auto",
+  listNowTasks: "auto",
   listSubtasks: "auto",
   updateTask: "auto",
   completeTask: "auto",

@@ -8,12 +8,13 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "unauthorized" }, { status: 401 });
   }
 
-  const { message, conversationId } = (await request.json()) as {
+  const { message, conversationId, startNewConversation } = (await request.json()) as {
     message: string;
     conversationId?: string;
+    startNewConversation?: boolean;
   };
 
   const userId = await getCurrentUserId(session.user.email);
-  const result = await sendChatMessage(userId, message, conversationId);
+  const result = await sendChatMessage(userId, message, conversationId, startNewConversation);
   return NextResponse.json(result);
 }

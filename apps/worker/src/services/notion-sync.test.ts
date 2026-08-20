@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { NotionPage } from "@persona/integrations";
 import type { Task } from "@persona/core";
-import { notionPageToTaskFields, taskToNotionProperties } from "./notion-sync.js";
+import { isBlankNotionPage, notionPageToTaskFields, taskToNotionProperties } from "./notion-sync.js";
 
 function makePage(properties: NotionPage["properties"]): NotionPage {
   return { id: "page-1", url: "https://notion.so/page-1", last_edited_time: "2026-08-01T00:00:00.000Z", properties };
@@ -143,5 +143,21 @@ describe("parent relation mapping", () => {
     });
     // An empty relation clears the link rather than leaving a stale one.
     expect(taskToNotionProperties(task, null).Parent).toEqual({ relation: [] });
+  });
+});
+
+describe("isBlankNotionPage", () => {
+  it("flags rows with no title so Notion's trailing empty row never becomes a task", () => {
+    expect(isBlankNotionPage(makePage({ Title: { type: "title", title: [] } }))).toBe(true);
+    // Whitespace-only counts as blank too — it produces an equally useless task.
+    expect(
+      isBlankNotionPage(makePage({ Title: { type: "title", title: [{ plain_text: "   " }] } })),
+    ).toBe(true);
+  });
+
+  it("does not flag a row that has a real title", () => {
+    expect(
+      isBlankNotionPage(makePage({ Title: { type: "title", title: [{ plain_text: "Real task" }] } })),
+    ).toBe(false);
   });
 });

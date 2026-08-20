@@ -118,6 +118,104 @@ button {
 }
 
 /* Chat */
+.chat-layout {
+  display: flex;
+  gap: 1rem;
+  flex: 1;
+  align-items: stretch;
+  min-height: 0;
+}
+
+.conversation-sidebar {
+  width: 220px;
+  flex: 0 0 220px;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  min-width: 0;
+}
+
+.new-chat-btn {
+  width: 100%;
+}
+
+.conversation-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  overflow-y: auto;
+}
+
+.conversation-item {
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius);
+  padding: 0.5rem 0.6rem;
+  cursor: pointer;
+  font: inherit;
+  color: var(--text);
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  min-width: 0;
+}
+
+.conversation-item:hover {
+  background: var(--surface);
+  border-color: var(--border);
+}
+
+.conversation-item.active {
+  background: var(--surface);
+  border-color: var(--primary);
+}
+
+/* Titles are arbitrary user text, so they must truncate instead of widening
+   the sidebar or wrapping to several lines. */
+.conversation-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.86rem;
+}
+
+.conversation-badge {
+  flex: 0 0 auto;
+  font-size: 0.68rem;
+  color: var(--text-muted);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 0.05rem 0.4rem;
+}
+
+.conversation-empty {
+  color: var(--text-muted);
+  font-size: 0.82rem;
+  padding: 0.4rem 0.6rem;
+}
+
+@media (max-width: 720px) {
+  .chat-layout {
+    flex-direction: column;
+  }
+
+  .conversation-sidebar {
+    width: auto;
+    flex: 0 0 auto;
+  }
+
+  .conversation-list {
+    max-height: 8rem;
+  }
+}
+
 .chat-card {
   background: var(--surface);
   border: 1px solid var(--border);

@@ -51,11 +51,39 @@ export async function sendChatMessage(
   userId: string,
   message: string,
   conversationId?: string,
+  startNewConversation?: boolean,
 ) {
   return workerFetch("/chat", {
     method: "POST",
-    body: JSON.stringify({ userId, message, conversationId }),
+    body: JSON.stringify({
+      userId,
+      message,
+      conversationId,
+      channel: "web",
+      startNewConversation,
+    }),
   });
+}
+
+export interface ConversationRow {
+  id: string;
+  title: string | null;
+  channel: "web" | "telegram";
+  messageCount: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export async function listConversations(userId: string) {
+  return workerFetch(`/conversations?userId=${encodeURIComponent(userId)}`) as Promise<{
+    conversations: ConversationRow[];
+  }>;
+}
+
+export async function loadConversationMessages(userId: string, conversationId: string) {
+  return workerFetch(
+    `/conversations/${encodeURIComponent(conversationId)}/messages?userId=${encodeURIComponent(userId)}`,
+  ) as Promise<{ messages: { role: "user" | "assistant"; content: string; createdAt: string }[] }>;
 }
 
 export async function listTasks(userId: string) {

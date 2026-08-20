@@ -173,11 +173,49 @@ export const notificationDeliveries = pgTable(
   }),
 );
 
+/**
+ * One chat thread, in the ChatGPT sense: the web app starts a new one per
+ * "New chat", and Telegram starts one per /new.
+ *
+ * `channel` keeps the two surfaces apart — without it, Telegram's "continue
+ * where I left off" would land in whatever thread the web app used last, which
+ * is how the two used to bleed into each other. Threads stay listable across
+ * both surfaces regardless of which one created them.
+ */
+export const conversations = pgTable(
+  "conversations",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    // Null until the first turn has been titled; the client falls back to
+    // showing the opening message.
+    title: text("title"),
+    channel: text("channel", { enum: ["web", "telegram"] })
+      .notNull()
+      .default("web"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    // Last activity, not last edit — this is what both the thread list and
+    // Telegram's "current thread" lookup order by.
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    userChannelActivityIdx: index("conversations_user_channel_updated_idx").on(
+      table.userId,
+      table.channel,
+      table.updatedAt,
+    ),
+  }),
+);
+
 export const conversationMessages = pgTable(
   "conversation_messages",
   {
     id: uuid("id").primaryKey().defaultRandom(),
-    conversationId: uuid("conversation_id").notNull(),
+    conversationId: uuid("conversation_id")
+      .notNull()
+      .references(() => conversations.id, { onDelete: "cascade" }),
     userId: uuid("user_id")
       .notNull()
       .references(() => users.id, { onDelete: "cascade" }),

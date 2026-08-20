@@ -1,8 +1,7 @@
-import { randomUUID } from "node:crypto";
 import { beforeEach, describe, expect, it } from "vitest";
 import { schema } from "@persona/db";
 import { createTestUser, getTestDb, resetTestDb } from "../test-support/db.js";
-import { loadRecentMessages } from "./repository.js";
+import { createConversation, loadRecentMessages } from "./repository.js";
 
 /**
  * Inserts with an explicit createdAt so ordering is deterministic —
@@ -33,7 +32,9 @@ describe("loadRecentMessages", () => {
 
   it("drops a leading orphaned tool message whose tool_calls assistant fell outside the window", async () => {
     const userId = await createTestUser();
-    const conversationId = randomUUID();
+    // conversation_messages is FK'd to conversations, so the thread has to
+    // exist before anything can be appended to it.
+    const conversationId = await createConversation(getTestDb(), userId, "web");
     const base = new Date("2026-08-19T00:00:00.000Z");
     const at = (offsetMs: number) => new Date(base.getTime() + offsetMs);
 
@@ -59,7 +60,9 @@ describe("loadRecentMessages", () => {
 
   it("keeps a complete tool_calls/tool pair when both are inside the window", async () => {
     const userId = await createTestUser();
-    const conversationId = randomUUID();
+    // conversation_messages is FK'd to conversations, so the thread has to
+    // exist before anything can be appended to it.
+    const conversationId = await createConversation(getTestDb(), userId, "web");
     const base = new Date("2026-08-19T00:00:00.000Z");
     const at = (offsetMs: number) => new Date(base.getTime() + offsetMs);
 

@@ -68,10 +68,20 @@ export const createReminderInputSchema = z.object({
 });
 export type CreateReminderInput = z.infer<typeof createReminderInputSchema>;
 
+export const conversationChannelSchema = z.enum(["web", "telegram"]);
+
 export const chatInputSchema = z.object({
   userId: z.string().uuid(),
   message: z.string().min(1).max(4000),
   conversationId: z.string().uuid().optional(),
+  /** Which surface the message came from; threads are kept separate per channel. */
+  channel: conversationChannelSchema.default("web"),
+  /**
+   * Forces a fresh thread even if the caller could have continued one — this
+   * is what "New chat" sends, and it must be explicit: omitting a
+   * conversationId means "continue where I left off", not "start over".
+   */
+  startNewConversation: z.boolean().optional(),
 });
 export type ChatInput = z.infer<typeof chatInputSchema>;
 
