@@ -99,6 +99,10 @@ export function ChatPanel() {
           startNewConversation: forceNew || undefined,
         }),
       });
+      // An error response is often an HTML error page, which would throw on
+      // .json() and land in the catch below as if the request never happened.
+      if (!response.ok) throw new Error(`chat failed (${response.status})`);
+
       const data = await response.json();
       setConversationId(data.conversationId);
       setForceNew(false);
@@ -112,7 +116,17 @@ export function ChatPanel() {
       ]);
       void refreshConversations();
     } catch {
-      setEntries((prev) => [...prev, { role: "assistant", text: "Error sending message." }]);
+      // The turn may well have completed on the server even though the
+      // response never arrived, so don't claim the message was lost — and
+      // refresh the list, since the thread it created will be there.
+      setEntries((prev) => [
+        ...prev,
+        {
+          role: "assistant",
+          text: "Không nhận được phản hồi (có thể do quá thời gian chờ). Tin nhắn có thể vẫn đã được xử lý — mở lại hội thoại ở danh sách bên trái để kiểm tra.",
+        },
+      ]);
+      void refreshConversations();
     } finally {
       setPending(false);
     }

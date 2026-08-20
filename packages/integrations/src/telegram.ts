@@ -13,6 +13,21 @@ export interface ApprovalButtons {
   cancelLabel?: string;
 }
 
+/**
+ * The interactive surface the Telegram webhook needs, on top of the plain
+ * outbound `send` the scheduler uses. Kept separate from NotificationChannel
+ * so a delivery-only channel doesn't have to implement callbacks and edits it
+ * will never receive.
+ */
+export interface TelegramChatChannel extends NotificationChannel {
+  sendWithApprovalButtons(
+    message: TelegramMessage,
+    buttons: ApprovalButtons,
+  ): Promise<{ providerMessageId: string }>;
+  answerCallbackQuery(callbackQueryId: string, text?: string): Promise<void>;
+  editMessageText(chatId: string, messageId: number, text: string): Promise<void>;
+}
+
 export class TelegramNotificationChannel implements NotificationChannel {
   private readonly apiBase: string;
 

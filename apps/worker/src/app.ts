@@ -2,8 +2,18 @@ import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest }
 import bcrypt from "bcryptjs";
 import { eq } from "drizzle-orm";
 import { createDb, schema, type Database } from "@persona/db";
-import { NotionClient, TavilyClient, TelegramNotificationChannel } from "@persona/integrations";
-import { chatInputSchema, createTaskInputSchema, updateTaskInputSchema } from "@persona/core";
+import {
+  NotionClient,
+  TavilyClient,
+  TelegramNotificationChannel,
+  type TelegramChatChannel,
+} from "@persona/integrations";
+import {
+  chatInputSchema,
+  createTaskInputSchema,
+  updateTaskInputSchema,
+  type AgentRuntime,
+} from "@persona/core";
 import { config } from "./config.js";
 import { DrizzleTaskService } from "./services/task-service.js";
 import { DrizzleReminderService } from "./services/reminder-service.js";
@@ -29,6 +39,14 @@ import {
 
 export interface BuildAppOptions {
   db?: Database;
+  /**
+   * Overrides for the two collaborators that would otherwise reach the network
+   * (an LLM provider and the Telegram API). Supplied by tests so webhook
+   * behaviour can be exercised without real API calls; production passes
+   * neither.
+   */
+  agentRuntime?: AgentRuntime;
+  notificationChannel?: TelegramChatChannel;
 }
 
 // Desktop tokens are scoped to "read tasks / complete task / snooze task"
@@ -61,16 +79,19 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   const reminderService = new DrizzleReminderService(db);
   const tavily = config.tavilyApiKey ? new TavilyClient(config.tavilyApiKey) : undefined;
   const breakdown = new TaskBreakdownService(config.llm, config.llm.breakdownModel);
-  const agentRuntime = new OpenAICompatibleAgentAdapter(
-    db,
-    taskService,
-    reminderService,
-    config.llm,
-    notion,
-    tavily,
-    breakdown,
-  );
-  const notificationChannel = new TelegramNotificationChannel(config.telegramBotToken);
+  const agentRuntime: AgentRuntime =
+    options.agentRuntime ??
+    new OpenAICompatibleAgentAdapter(
+      db,
+      taskService,
+      reminderService,
+      config.llm,
+      notion,
+      tavily,
+      breakdown,
+    );
+  const notificationChannel =
+    options.notificationChannel ?? new TelegramNotificationChannel(config.telegramBotToken);
   const resolveChatId = makeChatIdResolver(db);
 
   /**
@@ -461,19 +482,34 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       return reply.code(200).send({ ok: true });
     }
 
-    const result = await agentRuntime.chat({
-      userId: user.id,
-      message: text,
-      channel: "telegram",
-    });
+    // Always answer Telegram with 200, even when the turn failed. A non-2xx
+    // makes Telegram redeliver the same message, which re-runs the whole agent
+    // loop — so a transient failure would not just retry, it could duplicate
+    // real side effects like creating a task. Failures are reported to the
+    // user in-chat and logged instead.
+    try {
+      const result = await agentRuntime.chat({
+        userId: user.id,
+        message: text,
+        channel: "telegram",
+      });
 
-    if (result.pendingApproval) {
-      await notificationChannel.sendWithApprovalButtons(
-        { chatId: String(chatId), text: result.reply },
-        { approvalId: result.pendingApproval.approvalId },
-      );
-    } else {
-      await notificationChannel.send({ chatId: String(chatId), text: result.reply });
+      if (result.pendingApproval) {
+        await notificationChannel.sendWithApprovalButtons(
+          { chatId: String(chatId), text: result.reply },
+          { approvalId: result.pendingApproval.approvalId },
+        );
+      } else {
+        await notificationChannel.send({ chatId: String(chatId), text: result.reply });
+      }
+    } catch (chatError) {
+      app.log.error({ err: chatError }, "Telegram turn failed");
+      await notificationChannel
+        .send({ chatId: String(chatId), text: "⚠️ Có lỗi khi xử lý tin nhắn này. Bạn thử lại nhé." })
+        .catch(() => {
+          // If even the error notice can't be delivered there is nothing left
+          // to try; swallowing it keeps the 200 below intact.
+        });
     }
 
     return reply.code(200).send({ ok: true });

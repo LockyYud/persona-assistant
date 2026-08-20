@@ -161,7 +161,16 @@ export class OpenAICompatibleAgentAdapter implements AgentRuntime {
       error = runError instanceof Error ? runError.message : String(runError);
     }
 
-    const finalReply = error ? "Sorry, something went wrong processing that." : reply;
+    // `reply` is only ever set by a model turn that stopped calling tools, so
+    // it stays empty if the loop hit MAX_TOOL_ITERATIONS with the model still
+    // working. An empty string is not a usable answer: the web app renders a
+    // blank bubble, and Telegram rejects an empty message outright, which
+    // fails the webhook and makes Telegram redeliver the same message — each
+    // retry spending another full loop. Always send back something.
+    const finalReply = error
+      ? "Sorry, something went wrong processing that."
+      : reply.trim() ||
+        "Mình chưa hoàn thành được yêu cầu này sau nhiều bước. Bạn thử chia nhỏ hoặc nói rõ hơn giúp mình nhé.";
 
     const [agentRun] = await this.db
       .insert(schema.agentRuns)
@@ -177,12 +186,25 @@ export class OpenAICompatibleAgentAdapter implements AgentRuntime {
       .returning({ id: schema.agentRuns.id });
 
     if (!error) {
+      // Only the durable record is awaited. Titling and memory extraction are
+      // two more LLM round trips that the caller has no reason to wait for,
+      // and blocking on them pushed the whole request past the upstream
+      // timeout — the turn would complete server-side while the browser had
+      // already given up. They run detached instead.
       await this.persistTurn(
         conversationId,
         input.userId,
         input.message,
         messages.slice(turnStartIndex),
         memories,
+      );
+
+      void this.enrichAfterTurn(conversationId, input.userId, input.message, finalReply).catch(
+        (enrichError) => {
+          // Never allowed to surface: an unhandled rejection here would take
+          // the worker down for something entirely optional.
+          console.error("Post-turn enrichment failed:", enrichError);
+        },
       );
     }
 
@@ -276,15 +298,26 @@ export class OpenAICompatibleAgentAdapter implements AgentRuntime {
       );
     }
 
-    const assistantReplyText = [...newMessages]
-      .reverse()
-      .find((m) => m.role === "assistant" && typeof m.content === "string");
-    const replyText =
-      assistantReplyText?.role === "assistant" && typeof assistantReplyText.content === "string"
-        ? assistantReplyText.content
-        : "";
-
     await touchConversation(this.db, conversationId);
+  }
+
+  /**
+   * Titling and memory extraction: everything that improves *later* turns but
+   * adds nothing to the answer already on its way back. Deliberately not
+   * awaited by chat() — see the call site.
+   *
+   * Both steps are best-effort by design. On a host that stops the instance
+   * once a request finishes, this work can be cut short; the cost is a thread
+   * that keeps its placeholder name, or a fact learned one turn later.
+   */
+  private async enrichAfterTurn(
+    conversationId: string,
+    userId: string,
+    userMessage: string,
+    replyText: string,
+  ): Promise<void> {
+    if (!replyText.trim()) return;
+
     await this.titleConversationIfNeeded(conversationId, userMessage, replyText);
 
     const existingKeys = await listMemoryKeys(this.db, userId);

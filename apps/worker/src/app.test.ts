@@ -1,5 +1,7 @@
 import "./test-support/env.js";
 import { beforeEach, describe, expect, it } from "vitest";
+import { eq } from "drizzle-orm";
+import { schema } from "@persona/db";
 import { buildApp } from "./app.js";
 import { createTestUser, getTestDb, resetTestDb } from "./test-support/db.js";
 import { mintDesktopToken } from "./auth/desktop-token.js";
@@ -150,5 +152,114 @@ describe("desktop routes", () => {
     });
 
     expect(response.statusCode).toBe(400);
+  });
+});
+
+describe("telegram webhook resilience", () => {
+  beforeEach(resetTestDb);
+
+  const WEBHOOK_SECRET = "test-webhook-secret";
+
+  /**
+   * A Telegram channel that records what was sent. The callback/edit methods
+   * are unused by these tests but required by the interface, so they are
+   * no-ops rather than throwing.
+   */
+  function stubChannel(overrides: { send?: (text: string) => void; failSend?: boolean } = {}) {
+    return {
+      send: async ({ text }: { chatId: string; text: string }) => {
+        if (overrides.failSend) throw new Error("Telegram down");
+        overrides.send?.(text);
+        return { providerMessageId: "1" };
+      },
+      sendWithApprovalButtons: async () => ({ providerMessageId: "1" }),
+      answerCallbackQuery: async () => {},
+      editMessageText: async () => {},
+    };
+  }
+
+  /** An agent runtime whose turn always throws, standing in for a provider outage. */
+  function failingRuntime(onCall?: () => void) {
+    return {
+      chat: async () => {
+        onCall?.();
+        throw new Error("LLM exploded");
+      },
+      runTriggeredWorkflow: async () => {},
+    };
+  }
+
+  async function linkedUser(chatId: string) {
+    const userId = await createTestUser();
+    await getTestDb()
+      .update(schema.users)
+      .set({ telegramChatId: chatId })
+      .where(eq(schema.users.id, userId));
+    return userId;
+  }
+
+  function postMessage(app: ReturnType<typeof buildApp>, chatId: number, text: string) {
+    return app.inject({
+      method: "POST",
+      url: "/telegram/webhook",
+      headers: { "x-telegram-bot-api-secret-token": WEBHOOK_SECRET },
+      payload: { message: { chat: { id: chatId }, text } },
+    });
+  }
+
+  it("still answers 200 when the turn throws, so Telegram does not redeliver", async () => {
+    await linkedUser("555");
+    const sent: string[] = [];
+
+    const app = buildApp({
+      db: getTestDb(),
+      agentRuntime: failingRuntime(),
+      notificationChannel: stubChannel({ send: (text) => sent.push(text) }),
+    });
+
+    const response = await postMessage(app, 555, "hello");
+
+    // A non-2xx makes Telegram resend the same message, which re-runs the
+    // whole agent loop and can duplicate real side effects like task creation.
+    expect(response.statusCode).toBe(200);
+    // The failure still has to reach the user rather than vanishing.
+    expect(sent.join("")).toContain("lỗi");
+  });
+
+  it("answers 200 even when the failure notice itself cannot be delivered", async () => {
+    await linkedUser("556");
+
+    const app = buildApp({
+      db: getTestDb(),
+      agentRuntime: failingRuntime(),
+      notificationChannel: stubChannel({ failSend: true }),
+    });
+
+    const response = await postMessage(app, 556, "hello");
+    expect(response.statusCode).toBe(200);
+  });
+
+  it("/new opens a fresh telegram thread without invoking the model", async () => {
+    const userId = await linkedUser("557");
+    let chatCalls = 0;
+
+    const app = buildApp({
+      db: getTestDb(),
+      agentRuntime: failingRuntime(() => {
+        chatCalls += 1;
+      }),
+      notificationChannel: stubChannel(),
+    });
+
+    const response = await postMessage(app, 557, "/new");
+
+    expect(response.statusCode).toBe(200);
+    expect(chatCalls).toBe(0);
+    const threads = await getTestDb()
+      .select()
+      .from(schema.conversations)
+      .where(eq(schema.conversations.userId, userId));
+    expect(threads).toHaveLength(1);
+    expect(threads[0]?.channel).toBe("telegram");
   });
 });

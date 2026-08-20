@@ -10,3 +10,4 @@ process.env.AUTH_PASSWORD_HASH ??= "$2a$10$test.hash.value.not.a.real.bcrypt.dig
 process.env.AUTH_ALLOWED_EMAIL ??= "test@example.com";
 process.env.LLM_API_KEY ??= "test-llm-key";
 process.env.LLM_MODEL ??= "test-model";
+process.env.TELEGRAM_WEBHOOK_SECRET ??= "test-webhook-secret";
