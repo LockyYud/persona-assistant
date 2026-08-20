@@ -25,5 +25,9 @@ export const config = {
     apiKey: required("LLM_API_KEY"),
     baseURL: process.env.LLM_BASE_URL || undefined,
     model: required("LLM_MODEL"),
+    // Splitting a task into steps is a harder reasoning job than a normal
+    // chat turn, so it can run on a stronger model than the conversation
+    // does (see services/task-breakdown.ts). Falls back to the chat model.
+    breakdownModel: process.env.LLM_BREAKDOWN_MODEL || required("LLM_MODEL"),
   },
 };

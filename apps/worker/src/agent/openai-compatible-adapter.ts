@@ -11,6 +11,7 @@ import type {
   TaskService,
   TriggeredWorkflowInput,
 } from "@persona/core";
+import type { TaskBreakdownService } from "../services/task-breakdown.js";
 import { buildToolDefinitions, executeTool } from "./tools.js";
 import { getToolPolicy } from "./permissions.js";
 import { createApprovalRequest } from "./approvals.js";
@@ -33,7 +34,13 @@ concise language. Times you pass to tools must be ISO-8601 UTC datetimes.
 Some actions require the user's explicit confirmation before they run. When a tool result says
 an action is pending confirmation, tell the user what it would do and that a Confirm/Cancel
 button has been shown to them. You cannot confirm or cancel it yourself — only the user's own
-button press does that.`;
+button press does that.
+
+A task can be broken into steps, and its progress is the count of finished steps (e.g. 2/5).
+To break one down: call proposeTaskBreakdown, list the proposed steps for the user in your
+reply, and only then call createSubtasks with those exact titles — that one needs confirmation,
+so never call it with steps the user hasn't seen. A task showing no progress simply has no
+steps yet; do not describe it as 0% done.`;
 
 const MAX_TOOL_ITERATIONS = 5;
 
@@ -67,6 +74,7 @@ export class OpenAICompatibleAgentAdapter implements AgentRuntime {
     provider: LlmProviderConfig,
     private readonly notion?: NotionClient,
     private readonly tavily?: TavilyClient,
+    private readonly breakdown?: TaskBreakdownService,
   ) {
     this.client = new OpenAI({ apiKey: provider.apiKey, baseURL: provider.baseURL });
     this.model = provider.model;
@@ -198,6 +206,7 @@ export class OpenAICompatibleAgentAdapter implements AgentRuntime {
         reminderService: this.reminderService,
         notion: this.notion,
         tavily: this.tavily,
+        breakdown: this.breakdown,
       });
     } catch (toolError) {
       return { error: toolError instanceof Error ? toolError.message : String(toolError) };

@@ -7,6 +7,7 @@ import { chatInputSchema, createTaskInputSchema, updateTaskInputSchema } from "@
 import { config } from "./config.js";
 import { DrizzleTaskService } from "./services/task-service.js";
 import { DrizzleReminderService } from "./services/reminder-service.js";
+import { TaskBreakdownService } from "./services/task-breakdown.js";
 import { OpenAICompatibleAgentAdapter } from "./agent/openai-compatible-adapter.js";
 import { executeTool } from "./agent/tools.js";
 import { resolveApproval } from "./agent/approvals.js";
@@ -54,6 +55,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   const taskService = new DrizzleTaskService(db, notion, config.notionTasksDatabaseId);
   const reminderService = new DrizzleReminderService(db);
   const tavily = config.tavilyApiKey ? new TavilyClient(config.tavilyApiKey) : undefined;
+  const breakdown = new TaskBreakdownService(config.llm, config.llm.breakdownModel);
   const agentRuntime = new OpenAICompatibleAgentAdapter(
     db,
     taskService,
@@ -61,6 +63,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     config.llm,
     notion,
     tavily,
+    breakdown,
   );
   const notificationChannel = new TelegramNotificationChannel(config.telegramBotToken);
   const resolveChatId = makeChatIdResolver(db);

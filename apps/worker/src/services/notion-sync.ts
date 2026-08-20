@@ -1,8 +1,11 @@
-import { and, eq } from "drizzle-orm";
+import { aliasedTable, and, eq, inArray, isNotNull, ne, sql } from "drizzle-orm";
 import { schema, type Database } from "@persona/db";
 import type { NotionClient, NotionPage } from "@persona/integrations";
 import type { Task, TaskPriority, TaskStatus, TaskType } from "@persona/core";
 import { deriveTaskReminders } from "./reminder-derivation.js";
+
+// Self-join alias: parents are `schema.tasks`, their steps are `subtasks`.
+const subtasks = aliasedTable(schema.tasks, "subtasks");
 
 /**
  * Expected Notion database schema (property name -> type). Task title lives
@@ -20,6 +23,8 @@ interface NotionTaskFields {
   priority: TaskPriority;
   type: TaskType;
   dueAt: Date | null;
+  /** Notion page id of this page's parent task, from the "Parent" relation. */
+  parentNotionPageId: string | null;
 }
 
 interface NotionProperty {
@@ -28,6 +33,8 @@ interface NotionProperty {
   rich_text?: Array<{ plain_text: string }>;
   select?: { name: string } | null;
   date?: { start: string } | null;
+  relation?: Array<{ id: string }>;
+  number?: number | null;
 }
 
 function plainText(richText: Array<{ plain_text: string }> | undefined): string {
@@ -64,11 +71,25 @@ export function notionPageToTaskFields(page: NotionPage): NotionTaskFields {
     priority: isTaskPriority(priorityName) ? priorityName : "medium",
     type: isTaskType(typeName) ? typeName : "personal",
     dueAt: due ? new Date(due) : null,
+    // A page can relate to several others, but a task has exactly one
+    // parent — take the first and ignore the rest.
+    parentNotionPageId: properties.Parent?.relation?.[0]?.id ?? null,
   };
 }
 
-/** Builds the Notion property payload to mirror a task onto its page. */
-export function taskToNotionProperties(task: Task): Record<string, unknown> {
+/**
+ * Builds the Notion property payload to mirror a task onto its page.
+ *
+ * `parentNotionPageId` has to be passed in rather than read off the task,
+ * because a task stores its parent as our own uuid and Notion needs that
+ * parent's *page* id. Progress is deliberately absent: it's derived from
+ * child rows and written separately (see pushProgressToNotion) so that a
+ * plain task edit doesn't have to know anything about its steps.
+ */
+export function taskToNotionProperties(
+  task: Task,
+  parentNotionPageId?: string | null,
+): Record<string, unknown> {
   return {
     Title: { title: [{ text: { content: task.title } }] },
     Description: { rich_text: task.description ? [{ text: { content: task.description } }] : [] },
@@ -76,7 +97,13 @@ export function taskToNotionProperties(task: Task): Record<string, unknown> {
     Priority: { select: { name: task.priority } },
     Type: { select: { name: task.type } },
     Due: { date: task.dueAt ? { start: task.dueAt.toISOString() } : null },
+    Parent: { relation: parentNotionPageId ? [{ id: parentNotionPageId }] : [] },
   };
+}
+
+/** Formats step counts the way the guard column stores them. */
+function progressKey(done: number, total: number): string {
+  return `${done}/${total}`;
 }
 
 /**
@@ -93,7 +120,19 @@ export async function pushTaskToNotion(
   task: Task,
 ): Promise<Task> {
   try {
-    const properties = taskToNotionProperties(task);
+    // A step's parent must already exist in Notion for the relation to point
+    // anywhere; if it hasn't been mirrored yet the link is simply left off and
+    // the next inbound sync fills it in.
+    let parentNotionPageId: string | null = null;
+    if (task.parentTaskId) {
+      const [parent] = await db
+        .select({ notionPageId: schema.tasks.notionPageId })
+        .from(schema.tasks)
+        .where(eq(schema.tasks.id, task.parentTaskId));
+      parentNotionPageId = parent?.notionPageId ?? null;
+    }
+
+    const properties = taskToNotionProperties(task, parentNotionPageId);
 
     if (task.notionPageId) {
       const result = await notion.updatePage(task.notionPageId, properties);
@@ -116,6 +155,64 @@ export async function pushTaskToNotion(
 }
 
 /**
+ * Writes the derived step progress onto the Notion pages of every parent task
+ * that has steps, so the counts show up in Notion's own table/board views
+ * rather than only in this app.
+ *
+ * Notion has no rollup that can count children by select value, so the number
+ * has to be computed here and pushed. Each push bumps the page's
+ * last_edited_time, which would drag the page back into the next sync pass
+ * forever — hence the notionProgressPushed guard: a page is only written when
+ * its counts actually changed since the last write.
+ */
+export async function pushProgressToNotion(
+  db: Database,
+  notion: NotionClient,
+  userId: string,
+): Promise<{ pushed: number }> {
+  const parents = await db
+    .select({
+      id: schema.tasks.id,
+      notionPageId: schema.tasks.notionPageId,
+      pushed: schema.tasks.notionProgressPushed,
+      total: sql<number>`count(${subtasks.id})::int`,
+      done: sql<number>`count(*) filter (where ${subtasks.status} = 'done')::int`,
+    })
+    .from(schema.tasks)
+    .innerJoin(
+      subtasks,
+      and(eq(subtasks.parentTaskId, schema.tasks.id), ne(subtasks.status, "cancelled")),
+    )
+    .where(and(eq(schema.tasks.userId, userId), isNotNull(schema.tasks.notionPageId)))
+    .groupBy(schema.tasks.id, schema.tasks.notionPageId, schema.tasks.notionProgressPushed);
+
+  let pushed = 0;
+
+  for (const parent of parents) {
+    const key = progressKey(parent.done, parent.total);
+    if (parent.pushed === key || !parent.notionPageId || parent.total === 0) continue;
+
+    // Notion's "percent" number format renders a 0..1 fraction as 0..100%.
+    const result = await notion.updatePage(parent.notionPageId, {
+      Progress: { number: Number((parent.done / parent.total).toFixed(4)) },
+    });
+
+    if ("error" in result) {
+      console.error(`Failed to push progress for task ${parent.id}:`, result.error);
+      continue;
+    }
+
+    await db
+      .update(schema.tasks)
+      .set({ notionProgressPushed: key, notionSyncedAt: new Date(result.last_edited_time) })
+      .where(eq(schema.tasks.id, parent.id));
+    pushed += 1;
+  }
+
+  return { pushed };
+}
+
+/**
  * Pulls whatever changed in the user's Notion database since their stored
  * cursor and mirrors it into Postgres — new pages become new tasks, edited
  * pages update their linked task, always re-deriving reminders in the same
@@ -135,6 +232,7 @@ export async function syncNotionTasksForUser(
   if (!user) return { synced: 0 };
 
   const cursor = user.notionSyncCursor;
+  const pendingParentLinks = new Map<string, string>();
   let synced = 0;
   let newestSeen: Date | null = null;
   let startCursor: string | undefined;
@@ -156,12 +254,20 @@ export async function syncNotionTasksForUser(
 
       if (!newestSeen || lastEdited.getTime() > newestSeen.getTime()) newestSeen = lastEdited;
       await applyNotionPage(db, notionPage, userId, lastEdited);
+      // Parent links are resolved after the whole batch: a step's page can be
+      // applied before the parent page it points at exists in Postgres, so
+      // the relation can only be turned into a parentTaskId once every page
+      // in this pass has a row.
+      const parentPageId = notionPageToTaskFields(notionPage).parentNotionPageId;
+      if (parentPageId) pendingParentLinks.set(notionPage.id, parentPageId);
       synced += 1;
     }
 
     if (done || !page.nextCursor) break;
     startCursor = page.nextCursor;
   }
+
+  await resolveParentLinks(db, userId, pendingParentLinks);
 
   if (newestSeen) {
     await db
@@ -171,6 +277,40 @@ export async function syncNotionTasksForUser(
   }
 
   return { synced };
+}
+
+/**
+ * Turns "child page -> parent page" links into parentTaskId values, once both
+ * sides are guaranteed to have rows. A link whose parent page isn't in the
+ * database (deleted, or not shared with the integration) is skipped rather
+ * than clearing an existing parent.
+ */
+async function resolveParentLinks(
+  db: Database,
+  userId: string,
+  links: Map<string, string>,
+): Promise<void> {
+  if (links.size === 0) return;
+
+  const pageIds = [...new Set([...links.keys(), ...links.values()])];
+  const rows = await db
+    .select({ id: schema.tasks.id, notionPageId: schema.tasks.notionPageId })
+    .from(schema.tasks)
+    .where(and(eq(schema.tasks.userId, userId), inArray(schema.tasks.notionPageId, pageIds)));
+
+  const taskIdByPage = new Map(rows.filter((r) => r.notionPageId).map((r) => [r.notionPageId!, r.id]));
+
+  for (const [childPageId, parentPageId] of links) {
+    const childId = taskIdByPage.get(childPageId);
+    const parentId = taskIdByPage.get(parentPageId);
+    // Guard against a page related to itself, which would create a cycle.
+    if (!childId || !parentId || childId === parentId) continue;
+
+    await db
+      .update(schema.tasks)
+      .set({ parentTaskId: parentId })
+      .where(eq(schema.tasks.id, childId));
+  }
 }
 
 async function applyNotionPage(
@@ -228,6 +368,7 @@ async function applyNotionPage(
       priority: row.priority,
       type: row.type,
       dueAt: row.dueAt,
+      parentTaskId: row.parentTaskId,
       notionPageId: row.notionPageId,
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,

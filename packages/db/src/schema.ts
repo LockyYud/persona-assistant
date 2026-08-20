@@ -8,6 +8,7 @@ import {
   timestamp,
   uniqueIndex,
   uuid,
+  type AnyPgColumn,
 } from "drizzle-orm/pg-core";
 
 export const users = pgTable("users", {
@@ -42,10 +43,24 @@ export const tasks = pgTable(
       .notNull()
       .default("personal"),
     dueAt: timestamp("due_at", { withTimezone: true }),
+    // A subtask points at its parent task; null for top-level tasks. Mirrors
+    // the "Parent" relation in Notion. Cascades, so deleting a parent takes
+    // its steps with it — a step has no meaning without the task it belongs
+    // to. Only one level deep is expected in practice, though nothing here
+    // enforces that.
+    parentTaskId: uuid("parent_task_id").references((): AnyPgColumn => tasks.id, {
+      onDelete: "cascade",
+    }),
     // Set once a task is mirrored to/from Notion (see notion-sync.ts); null
     // for tasks that have never touched Notion.
     notionPageId: text("notion_page_id"),
     notionSyncedAt: timestamp("notion_synced_at", { withTimezone: true }),
+    // The "done/total" checklist progress last written to this task's Notion
+    // Progress property. Progress itself is always derived from child rows
+    // (never stored); this only exists so the sync can skip redundant writes
+    // — each write bumps the page's last_edited_time and would otherwise pull
+    // the page back into the next sync pass for no reason.
+    notionProgressPushed: text("notion_progress_pushed"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
@@ -53,6 +68,7 @@ export const tasks = pgTable(
     notionPageIdUnique: uniqueIndex("tasks_notion_page_id_idx")
       .on(table.notionPageId)
       .where(sql`${table.notionPageId} is not null`),
+    parentIdx: index("tasks_parent_task_id_idx").on(table.parentTaskId),
   }),
 );
 

@@ -9,6 +9,8 @@ interface TaskRow {
   priority: string;
   type: string;
   dueAt: string | null;
+  progress: { done: number; total: number } | null;
+  nextStep: { id: string; title: string } | null;
 }
 
 export default async function AllTasksPage() {
@@ -27,11 +29,20 @@ export default async function AllTasksPage() {
       <ul className="task-list">
         {tasks.map((task) => (
           <li key={task.id} className="task-card">
-            <div className="task-title">{task.title}</div>
+            <div className="task-title">
+              {task.title}
+              {task.progress && (
+                <span className="task-progress">
+                  {" "}
+                  {task.progress.done}/{task.progress.total}
+                </span>
+              )}
+            </div>
             <div className="task-meta">
               {task.status} · {task.priority} · {task.type}
               {task.dueAt ? ` · due ${new Date(task.dueAt).toLocaleString()}` : ""}
             </div>
+            {task.nextStep && <div className="task-next-step">Tiếp: {task.nextStep.title}</div>}
           </li>
         ))}
         {tasks.length === 0 && <p className="empty-state">No tasks yet.</p>}

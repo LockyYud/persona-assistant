@@ -2,7 +2,7 @@ import { and, eq, lte, or } from "drizzle-orm";
 import { schema, type Database } from "@persona/db";
 import type { NotificationChannel, NotionClient } from "@persona/integrations";
 import { computeNextOccurrence } from "./rrule.js";
-import { syncNotionTasksForUser } from "../services/notion-sync.js";
+import { pushProgressToNotion, syncNotionTasksForUser } from "../services/notion-sync.js";
 
 const LEASE_DURATION_MS = 2 * 60 * 1000;
 const MAX_OUTBOX_ATTEMPTS = 5;
@@ -29,6 +29,10 @@ async function syncNotionTasks(
   for (const user of users) {
     const result = await syncNotionTasksForUser(db, notion, databaseId, user.id);
     synced += result.synced;
+    // After pulling changes in, push the step counts back out — a step that
+    // just got ticked in Notion changes its parent's progress, and the parent
+    // page itself never "changed" so nothing else would update it.
+    await pushProgressToNotion(db, notion, user.id);
   }
   return synced;
 }

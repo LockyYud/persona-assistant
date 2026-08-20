@@ -88,6 +88,10 @@ export interface TaskRow {
   priority: string;
   type: string;
   dueAt: string | null;
+  /** Step counts, or null when the task has no steps at all. */
+  progress: { done: number; total: number } | null;
+  /** Earliest unfinished step, when the task has been broken down. */
+  nextStep: { id: string; title: string } | null;
 }
 
 export interface DesktopTokenRow {

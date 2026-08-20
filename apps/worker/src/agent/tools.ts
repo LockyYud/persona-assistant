@@ -1,14 +1,17 @@
 import {
   completeTaskInputSchema,
   createReminderInputSchema,
+  createSubtasksInputSchema,
   createTaskInputSchema,
   listTasksInputSchema,
+  proposeTaskBreakdownInputSchema,
   updateTaskInputSchema,
   type ReminderService,
   type TaskService,
 } from "@persona/core";
 import type { Database } from "@persona/db";
 import type { NotionClient, TavilyClient } from "@persona/integrations";
+import type { TaskBreakdownService } from "../services/task-breakdown.js";
 import type { ChatCompletionTool } from "openai/resources/index.js";
 import { zodToJsonSchema } from "zod-to-json-schema";
 
@@ -60,6 +63,38 @@ export function buildToolDefinitions(
         description:
           "Create a reminder tied to a task. nextRunAt must be an ISO-8601 UTC datetime.",
         parameters: zodToJsonSchema(createReminderInputSchema) as Record<string, unknown>,
+      },
+    },
+    {
+      type: "function",
+      function: {
+        name: "listSubtasks",
+        description:
+          "List the steps of one task, oldest first. Use when the user asks what's left on a task or how far along it is in detail.",
+        parameters: {
+          type: "object",
+          properties: { parentTaskId: { type: "string", description: "The parent task's id." } },
+          required: ["parentTaskId"],
+          additionalProperties: false,
+        },
+      },
+    },
+    {
+      type: "function",
+      function: {
+        name: "proposeTaskBreakdown",
+        description:
+          "Suggest the steps a task should be split into. Creates nothing — always show the proposed steps to the user, then call createSubtasks to actually create them. Pass anything the user said about how to split it as `context`.",
+        parameters: zodToJsonSchema(proposeTaskBreakdownInputSchema) as Record<string, unknown>,
+      },
+    },
+    {
+      type: "function",
+      function: {
+        name: "createSubtasks",
+        description:
+          "Create the given steps under a task. Requires the user's confirmation, so pass the exact step titles they agreed to — usually the ones proposeTaskBreakdown returned.",
+        parameters: zodToJsonSchema(createSubtasksInputSchema) as Record<string, unknown>,
       },
     },
   ];
@@ -130,6 +165,7 @@ export interface ToolContext {
   reminderService: ReminderService;
   notion?: NotionClient;
   tavily?: TavilyClient;
+  breakdown?: TaskBreakdownService;
 }
 
 /**
@@ -164,6 +200,46 @@ export async function executeTool(
     case "createReminder": {
       const input = createReminderInputSchema.parse(rawArgs);
       return ctx.reminderService.createReminder(ctx.userId, input);
+    }
+    case "listSubtasks": {
+      const { parentTaskId } = rawArgs as { parentTaskId: string };
+      return ctx.taskService.listSubtasks(ctx.userId, parentTaskId);
+    }
+    case "proposeTaskBreakdown": {
+      if (!ctx.breakdown) return { error: "Task breakdown is not configured" };
+      const input = proposeTaskBreakdownInputSchema.parse(rawArgs);
+
+      const task = await ctx.taskService.getTask(ctx.userId, input.taskId);
+      if (!task) return { error: "Task not found" };
+
+      const existing = await ctx.taskService.listSubtasks(ctx.userId, task.id);
+      if (existing.length > 0) {
+        return {
+          error: "This task already has steps. Show them with listSubtasks instead of re-splitting.",
+          steps: existing.map((step) => step.title),
+        };
+      }
+
+      // The page body is usually where a task's real detail lives, so feed it
+      // in when there is one — a title alone rarely has enough to split well.
+      let context = input.context;
+      if (ctx.notion && task.notionPageId) {
+        const page = await ctx.notion.getPage(task.notionPageId);
+        if (!("error" in page) && page.content.trim()) {
+          context = [context, `Notion page content:\n${page.content}`].filter(Boolean).join("\n\n");
+        }
+      }
+
+      const { steps } = await ctx.breakdown.propose(task, context);
+      if (steps.length === 0) {
+        return { error: "Could not produce a usable breakdown for this task." };
+      }
+
+      return { taskId: task.id, taskTitle: task.title, steps };
+    }
+    case "createSubtasks": {
+      const input = createSubtasksInputSchema.parse(rawArgs);
+      return ctx.taskService.createSubtasks(ctx.userId, input);
     }
     case "notion_search": {
       if (!ctx.notion) return { error: "Notion is not configured" };

@@ -9,6 +9,8 @@ interface TaskRow {
   priority: string;
   type: string;
   dueAt: string | null;
+  progress: { done: number; total: number } | null;
+  nextStep: { id: string; title: string } | null;
 }
 
 interface NowTasks {
@@ -135,11 +137,22 @@ function TaskGroup({
           <li key={task.id} className="task-card">
             <div className="task-card-row">
               <div>
-                <div className="task-title">{task.title}</div>
+                <div className="task-title">
+                  {task.title}
+                  {task.progress && (
+                    <span className="task-progress">
+                      {" "}
+                      {task.progress.done}/{task.progress.total}
+                    </span>
+                  )}
+                </div>
                 <div className="task-meta">
                   {task.type} · {task.priority}
                   {task.dueAt ? ` · ${formatRelative(task.dueAt)}` : ""}
                 </div>
+                {task.nextStep && (
+                  <div className="task-next-step">Tiếp: {task.nextStep.title}</div>
+                )}
               </div>
               <button
                 type="button"

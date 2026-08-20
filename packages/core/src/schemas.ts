@@ -10,6 +10,8 @@ export const createTaskInputSchema = z.object({
   priority: taskPrioritySchema.default("medium"),
   type: taskTypeSchema.default("personal"),
   dueAt: z.string().datetime().optional(),
+  /** Makes the new task a step of an existing one. */
+  parentTaskId: z.string().uuid().optional(),
 });
 export type CreateTaskInput = z.infer<typeof createTaskInputSchema>;
 
@@ -21,8 +23,31 @@ export const updateTaskInputSchema = z.object({
   priority: taskPrioritySchema.optional(),
   type: taskTypeSchema.optional(),
   dueAt: z.string().datetime().nullable().optional(),
+  /** Pass null to promote a subtask back to a top-level task. */
+  parentTaskId: z.string().uuid().nullable().optional(),
 });
 export type UpdateTaskInput = z.infer<typeof updateTaskInputSchema>;
+
+/** Read-only: asks the LLM to propose steps, creates nothing. */
+export const proposeTaskBreakdownInputSchema = z.object({
+  taskId: z.string().uuid(),
+  /** Anything the user said that should steer the breakdown. */
+  context: z.string().max(2000).optional(),
+});
+export type ProposeTaskBreakdownInput = z.infer<typeof proposeTaskBreakdownInputSchema>;
+
+/**
+ * Creates the steps. Deliberately takes explicit titles rather than a task id
+ * to re-derive them from: this tool needs user confirmation, and the approval
+ * payload must be exactly the list the user was shown — re-running a
+ * generation step at approval time could produce different steps than the
+ * ones they agreed to.
+ */
+export const createSubtasksInputSchema = z.object({
+  parentTaskId: z.string().uuid(),
+  titles: z.array(z.string().min(1).max(200)).min(1).max(20),
+});
+export type CreateSubtasksInput = z.infer<typeof createSubtasksInputSchema>;
 
 export const completeTaskInputSchema = z.object({
   taskId: z.string().uuid(),

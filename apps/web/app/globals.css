@@ -243,6 +243,19 @@ button {
   margin-top: 0.2rem;
 }
 
+/* Step counts sit next to the title, so they read as part of it rather than
+   as another piece of metadata. */
+.task-progress {
+  color: var(--text-muted);
+  font-weight: 500;
+  font-size: 0.85rem;
+}
+
+.task-next-step {
+  font-size: 0.82rem;
+  margin-top: 0.25rem;
+}
+
 .empty-state {
   color: var(--text-muted);
   font-size: 0.9rem;

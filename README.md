@@ -121,6 +121,30 @@ curl -X POST "https://api.telegram.org/bot<TELEGRAM_BOT_TOKEN>/setWebhook" \
   best-effort mirror so the day-to-day editing surface can be Notion's UI
   instead of this app's. See the property-schema requirements in
   `.env.example`.
+- **Task progress, counted rather than typed in.** A task can have subtasks
+  (steps) — real task rows with a `parentTaskId`, mirrored to Notion's `Parent`
+  self-relation. Progress is always *derived* (`done/total` over the steps) and
+  never stored as a number the user maintains, so it can't drift from reality;
+  cancelled steps leave both sides of the ratio, so abandoning a step doesn't
+  leave the task looking permanently unfinished. A task with no steps reports
+  `progress: null` — deliberately distinct from 0%, since "not broken down" is
+  not "nothing done". Steps never appear as their own entries in the Now view
+  or task list: a task split into six steps stays one line, carrying its count
+  and its next unfinished step. Steps inherit the parent's type/priority but
+  get no due date, so one deadline doesn't multiply into six reminders.
+  Notion's rollups can't count children by select value, so the app writes a
+  derived `Progress` percent onto the parent page; `notion_progress_pushed`
+  guards that write, since every push bumps `last_edited_time` and would
+  otherwise pull the page into the next sync pass forever.
+- **Breaking a task down, as two tools rather than one.** `proposeTaskBreakdown`
+  (`auto`, writes nothing) asks the LLM for steps — using `LLM_BREAKDOWN_MODEL`
+  and a focused prompt, plus the task's Notion page body as context, because
+  decomposition is a harder reasoning job than the chat turn requesting it.
+  `createSubtasks` (`confirm`) then creates the exact titles the user was shown.
+  The split is required, not stylistic: a `confirm` tool is intercepted *before*
+  it executes, so a single `breakdownTask` tool would ask the user to approve
+  without any steps to look at — and re-generating them at approval time could
+  create steps they never agreed to.
 - **Web search.** When `TAVILY_API_KEY` is set, the agent gains a `web_search`
   tool (`auto` policy) for current-events/internet lookups beyond training
   data. The system prompt also injects the current UTC date/time every turn

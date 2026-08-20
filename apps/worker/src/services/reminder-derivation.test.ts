@@ -25,6 +25,7 @@ function toTask(row: typeof schema.tasks.$inferSelect): Task {
     priority: row.priority,
     type: row.type,
     dueAt: row.dueAt,
+    parentTaskId: row.parentTaskId,
     notionPageId: row.notionPageId,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
