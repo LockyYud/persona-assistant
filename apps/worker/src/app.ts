@@ -17,6 +17,7 @@ import {
   dateKeySchema,
   listSessionsInputSchema,
   planSessionInputSchema,
+  setRoutineTargetInputSchema,
   updateTaskInputSchema,
   type AgentRuntime,
 } from "@persona/core";
@@ -531,6 +532,43 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       const task = await taskService.updateTask(userId, {
         taskId: request.params.taskId,
         status: parsed.data,
+      });
+      return { task };
+    },
+  );
+
+  /**
+   * Designate a task as a routine — one pursued at a rate per month — or stop
+   * treating it as one.
+   *
+   * Setting a target also starts the task if it was merely open. A routine
+   * only reaches the `ongoing` bucket (and therefore the panel, the pace
+   * figures and the briefing) while it is in_progress, so without this a user
+   * would give a task a target from the widget and watch nothing happen.
+   * Clearing the target deliberately does NOT stop the task: "this is no
+   * longer measured monthly" is not "I am no longer doing this".
+   */
+  app.post<{ Params: { taskId: string }; Body: { monthlyTargetMinutes?: number | null } }>(
+    "/desktop/tasks/:taskId/routine",
+    async (request, reply) => {
+      const userId = await requireDesktopUserId(request, reply);
+      if (!userId) return;
+
+      const parsed = setRoutineTargetInputSchema.safeParse({
+        taskId: request.params.taskId,
+        monthlyTargetMinutes: request.body?.monthlyTargetMinutes ?? null,
+      });
+      if (!parsed.success) return reply.code(400).send({ error: parsed.error.flatten() });
+
+      const existing = await taskService.getTask(userId, parsed.data.taskId);
+      if (!existing) return reply.code(404).send({ error: "task not found" });
+
+      const task = await taskService.updateTask(userId, {
+        taskId: parsed.data.taskId,
+        monthlyTargetMinutes: parsed.data.monthlyTargetMinutes,
+        ...(parsed.data.monthlyTargetMinutes !== null && existing.status === "open"
+          ? { status: "in_progress" as const }
+          : {}),
       });
       return { task };
     },

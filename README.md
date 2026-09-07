@@ -16,7 +16,7 @@ original "delivery-only" scope).
   `/sessions/:id/skip`, `/internal/tick`, `/telegram/webhook`,
   `/approvals/:id/decision`, `/auth/verify-password`, `/health`, `/users/me`,
   plus the token-gated `/desktop/*` mirror (`/desktop/today`,
-  `/desktop/sessions`, ...). Owns the LLM adapter, task/reminder/session
+  `/desktop/sessions`, `/desktop/tasks/:id/routine`, ...). Owns the LLM adapter, task/reminder/session
   services, and the outbox/scheduler tick logic.
 - `apps/scheduler-lambda` — Lambda invoked every minute by a live EventBridge
   Scheduler; HMAC-signs an empty body and calls `/internal/tick`.
@@ -212,6 +212,16 @@ curl -X POST "https://api.telegram.org/bot<TELEGRAM_BOT_TOKEN>/setWebhook" \
   heads-up reminders (the exam really is on that date) but never the `overdue`
   one, since a Telegram message saying a routine is overdue would contradict
   the screen.
+- **A routine can be designated from the desktop panel, not only in chat.**
+  `POST /desktop/tasks/:taskId/routine` sets or clears a task's
+  `monthlyTargetMinutes` and nothing else — its own narrow route rather than
+  exposing `updateTask`, because the desktop token sits in a file on a laptop
+  and is otherwise limited to reading, completing, snoozing and restatusing.
+  Setting a target also starts the task when it was merely `open`: a routine
+  only reaches the `ongoing` bucket while `in_progress`, so without that the
+  user would give a task a target and watch nothing happen. Clearing a target
+  deliberately does *not* stop the task — "no longer measured monthly" is not
+  "no longer doing this".
 - **Day planning, by choosing rather than by generating.** A `work_sessions`
   row is one day's committed work on a task — "today I'll spend an hour on
   English" — created from the desktop widget or in chat, never generated. One

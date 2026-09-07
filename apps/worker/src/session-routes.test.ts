@@ -138,4 +138,129 @@ describe("session routes", () => {
     });
     expect(badMinutes.statusCode).toBe(400);
   });
+
+  it("designates a routine from the widget, starting the task so it actually appears", async () => {
+    const app = buildApp({ db: getTestDb() });
+    const userId = await createTestUser();
+    const { raw } = await mintDesktopToken(getTestDb(), userId, "test");
+    const auth = { authorization: `Bearer ${raw}`, "content-type": "application/json" };
+    const created = await app.inject({
+      method: "POST",
+      url: "/tasks",
+      headers: BFF,
+      payload: { userId, title: "Học tiếng Anh" },
+    });
+    const task = created.json().task;
+
+    const response = await app.inject({
+      method: "POST",
+      url: `/desktop/tasks/${task.id}/routine`,
+      headers: auth,
+      payload: { monthlyTargetMinutes: 20 * 60 },
+    });
+
+    expect(response.statusCode).toBe(200);
+    // Starting it is the load-bearing half: a routine only reaches `ongoing`
+    // while in_progress, so without it the widget would look broken.
+    expect(response.json().task).toMatchObject({
+      monthlyTargetMinutes: 20 * 60,
+      status: "in_progress",
+    });
+
+    const today = await app.inject({ method: "GET", url: "/desktop/today", headers: auth });
+    expect(today.json().ongoing.map((t: { id: string }) => t.id)).toEqual([task.id]);
+  });
+
+  it("leaves an already-started task's status alone", async () => {
+    const app = buildApp({ db: getTestDb() });
+    const userId = await createTestUser();
+    const { raw } = await mintDesktopToken(getTestDb(), userId, "test");
+    const created = await app.inject({
+      method: "POST",
+      url: "/tasks",
+      headers: BFF,
+      payload: { userId, title: "Gym" },
+    });
+    const task = created.json().task;
+    await app.inject({
+      method: "PATCH",
+      url: `/tasks/${task.id}`,
+      headers: BFF,
+      payload: { userId, status: "in_progress" },
+    });
+
+    const response = await app.inject({
+      method: "POST",
+      url: `/desktop/tasks/${task.id}/routine`,
+      headers: { authorization: `Bearer ${raw}`, "content-type": "application/json" },
+      payload: { monthlyTargetMinutes: 480 },
+    });
+
+    expect(response.json().task.status).toBe("in_progress");
+  });
+
+  it("stops measuring a routine without stopping the task", async () => {
+    const app = buildApp({ db: getTestDb() });
+    const userId = await createTestUser();
+    const { raw } = await mintDesktopToken(getTestDb(), userId, "test");
+    const auth = { authorization: `Bearer ${raw}`, "content-type": "application/json" };
+    const task = await createRoutine(app, userId);
+
+    const response = await app.inject({
+      method: "POST",
+      url: `/desktop/tasks/${task.id}/routine`,
+      headers: auth,
+      payload: { monthlyTargetMinutes: null },
+    });
+
+    expect(response.statusCode).toBe(200);
+    // "No longer measured monthly" is not "no longer doing this".
+    expect(response.json().task).toMatchObject({
+      monthlyTargetMinutes: null,
+      status: "in_progress",
+    });
+    const today = await app.inject({ method: "GET", url: "/desktop/today", headers: auth });
+    expect(today.json().ongoing).toEqual([]);
+  });
+
+  it("rejects an absurd monthly target and an unknown task", async () => {
+    const app = buildApp({ db: getTestDb() });
+    const userId = await createTestUser();
+    const { raw } = await mintDesktopToken(getTestDb(), userId, "test");
+    const auth = { authorization: `Bearer ${raw}`, "content-type": "application/json" };
+    const task = await createRoutine(app, userId);
+
+    const tooBig = await app.inject({
+      method: "POST",
+      url: `/desktop/tasks/${task.id}/routine`,
+      headers: auth,
+      payload: { monthlyTargetMinutes: 999_999 },
+    });
+    expect(tooBig.statusCode).toBe(400);
+
+    const missing = await app.inject({
+      method: "POST",
+      url: "/desktop/tasks/2b1f6a2e-0000-4000-8000-000000000000/routine",
+      headers: auth,
+      payload: { monthlyTargetMinutes: 600 },
+    });
+    expect(missing.statusCode).toBe(404);
+  });
+
+  it("never lets a desktop token designate someone else's task", async () => {
+    const app = buildApp({ db: getTestDb() });
+    const userId = await createTestUser();
+    const otherUserId = await createTestUser();
+    const { raw } = await mintDesktopToken(getTestDb(), userId, "test");
+    const theirTask = await createRoutine(app, otherUserId, "Not yours");
+
+    const response = await app.inject({
+      method: "POST",
+      url: `/desktop/tasks/${theirTask.id}/routine`,
+      headers: { authorization: `Bearer ${raw}`, "content-type": "application/json" },
+      payload: { monthlyTargetMinutes: 600 },
+    });
+
+    expect(response.statusCode).toBe(404);
+  });
 });

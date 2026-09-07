@@ -107,6 +107,23 @@ export const internalTickSignatureHeaders = z.object({
   "x-timestamp": z.string(),
 });
 
+/**
+ * Turning a task into a routine, or back into an ordinary one.
+ *
+ * Its own input rather than a use of updateTask because the desktop token is
+ * deliberately narrow: it may read tasks, complete them, snooze them and move
+ * them between the two working statuses, and nothing else. Designating a
+ * routine is the one further thing the panel needs, so it gets one endpoint
+ * that does exactly that instead of opening the full task-update surface to a
+ * credential that sits in a file on a laptop.
+ */
+export const setRoutineTargetInputSchema = z.object({
+  taskId: z.string().uuid(),
+  /** Null stops treating the task as a routine; its sessions are untouched. */
+  monthlyTargetMinutes: monthlyTargetMinutesSchema.nullable(),
+});
+export type SetRoutineTargetInput = z.infer<typeof setRoutineTargetInputSchema>;
+
 export const workSessionStatusSchema = z.enum(["planned", "done", "skipped"]);
 
 /**
