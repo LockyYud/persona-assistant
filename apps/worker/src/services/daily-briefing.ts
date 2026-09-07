@@ -4,6 +4,7 @@ import { schema, type Database } from "@persona/db";
 import type { NotificationChannel } from "@persona/integrations";
 import type { NowTasks, TaskService, TaskWithProgress } from "@persona/core";
 import { dateKeyInTimezone, minutesSinceMidnightInTimezone } from "./local-time.js";
+import { describePace, formatMinutes } from "./pace.js";
 
 /**
  * How late a briefing may still be sent. The tick is not guaranteed to run at
@@ -14,14 +15,19 @@ import { dateKeyInTimezone, minutesSinceMidnightInTimezone } from "./local-time.
  */
 const CATCH_UP_WINDOW_MINUTES = 4 * 60;
 
-const BRIEFING_PROMPT = `You write a short morning briefing about someone's tasks for the day.
+const BRIEFING_PROMPT = `You write a short morning briefing about someone's day, and propose a plan.
 
 You are given the real data. Rules:
-- Never invent a task, a count, or a deadline that is not in the data.
+- Never invent a task, a count, a deadline or a number of minutes that is not in the data.
 - Open with one sentence on what deserves attention first, and why (most overdue,
-  or nearest deadline, or highest priority) — this is the part that earns the message.
+  or nearest deadline, or furthest behind its monthly pace) — this is the part that
+  earns the message.
 - Then list the tasks compactly. Keep the whole thing under 12 lines.
 - Where a task shows step progress, mention the next step rather than the count alone.
+- The "Routine" section lists things pursued at a rate per month, each with how far
+  behind or ahead it is and a suggested length for today. Propose today's plan from
+  those suggestions — offer the numbers given, never your own. Close by inviting him
+  to reply with what he picks.
 - Write in Vietnamese, second person, plain and calm. No greeting boilerplate, no
   emoji spam (at most a couple), no motivational filler.
 
@@ -61,7 +67,22 @@ export function isBriefingDue(user: BriefingUser, now: Date): boolean {
  * stays quiet. Backlog with no deadline is not a reason to send.
  */
 export function hasBriefingContent(now: NowTasks): boolean {
-  return now.overdue.length > 0 || now.today.length > 0;
+  // A routine slipping behind its month is worth interrupting for: it is
+  // exactly the failure nothing else in the app would ever raise, since a
+  // routine has no deadline to go overdue against. Being on track or ahead is
+  // not — a morning message that says "all fine" every day is how a channel
+  // gets ignored.
+  const behind = now.ongoing.some((task) => task.pace?.status === "behind");
+  return now.overdue.length > 0 || now.today.length > 0 || behind;
+}
+
+/**
+ * A routine's line: where its month stands, and what to offer for today. The
+ * wording comes from describePace so the briefing and the chat agent never
+ * describe the same state differently.
+ */
+function describeRoutine(task: TaskWithProgress): string {
+  return `- ${describePace(task.title, task.pace!)}`;
 }
 
 function describeTask(task: TaskWithProgress): string {
@@ -88,6 +109,16 @@ export function renderBriefing(now: NowTasks): string {
   }
   if (now.nextUp) {
     sections.push(`Sắp tới:\n${describeTask(now.nextUp)}`);
+  }
+  const paced = now.ongoing.filter((task) => task.pace !== null);
+  if (paced.length > 0) {
+    // Furthest behind first — listNowTasks already orders them that way, so the
+    // model sees the one most needing today's time at the top.
+    const total = paced.reduce((sum, task) => sum + (task.pace?.suggestedTodayMinutes ?? 0), 0);
+    sections.push(
+      `Routine (${paced.length}):\n${paced.map(describeRoutine).join("\n")}\n` +
+        `Tổng đề xuất hôm nay: ${formatMinutes(total)}.`,
+    );
   }
   if (now.unscheduledCount > 0) {
     sections.push(`+ ${now.unscheduledCount} task chưa có hạn.`);

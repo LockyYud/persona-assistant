@@ -1,17 +1,24 @@
 import {
+  completeSessionInputSchema,
   completeTaskInputSchema,
   createReminderInputSchema,
   createSubtasksInputSchema,
   createTaskInputSchema,
+  listSessionsInputSchema,
   listTasksInputSchema,
+  planSessionInputSchema,
   proposeTaskBreakdownInputSchema,
+  skipSessionInputSchema,
   updateTaskInputSchema,
   type ReminderService,
+  type SessionService,
   type TaskService,
 } from "@persona/core";
-import type { Database } from "@persona/db";
+import { schema, type Database } from "@persona/db";
+import { eq } from "drizzle-orm";
 import type { NotionClient, TavilyClient } from "@persona/integrations";
 import type { TaskBreakdownService } from "../services/task-breakdown.js";
+import { dateKeyInTimezone } from "../services/local-time.js";
 import type { ChatCompletionTool } from "openai/resources/index.js";
 import { zodToJsonSchema } from "zod-to-json-schema";
 
@@ -101,6 +108,51 @@ export function buildToolDefinitions(
     {
       type: "function",
       function: {
+        name: "listToday",
+        description:
+          "What the user committed to today, plus every routine still asking for time this month with its pace. THE tool for 'what am I doing today', 'what should I work on', 'am I on track', 'how's my English going'. Returns each routine's target, what's been done this month, whether it is behind, and how many minutes to suggest for today.",
+        parameters: { type: "object", properties: {}, additionalProperties: false },
+      },
+    },
+    {
+      type: "function",
+      function: {
+        name: "planSession",
+        description:
+          "Record that the user is spending a stretch of a day on one task — 'today I'll study English for an hour' becomes planSession(taskId, plannedMinutes: 60). Only for tasks pursued at a rate (they have a monthly target); ordinary one-off tasks do not need sessions. There is one session per task per day, so calling this again for the same day revises it rather than adding a second. Pass startAt only if the user named a time, which is also what earns the session a reminder.",
+        parameters: zodToJsonSchema(planSessionInputSchema) as Record<string, unknown>,
+      },
+    },
+    {
+      type: "function",
+      function: {
+        name: "completeSession",
+        description:
+          "Mark today's session on a task as done. Omit actualMinutes when the user just says they did it — the minutes they committed to are credited. Pass actualMinutes when they say how long it really took ('I only managed 20 minutes').",
+        parameters: zodToJsonSchema(completeSessionInputSchema) as Record<string, unknown>,
+      },
+    },
+    {
+      type: "function",
+      function: {
+        name: "skipSession",
+        description:
+          "Record that the user is deliberately passing on a planned session ('skip the gym today, I'm ill'). A deliberate skip does not count against their monthly pace, whereas silently letting the day go by does — so use this rather than leaving it alone.",
+        parameters: zodToJsonSchema(skipSessionInputSchema) as Record<string, unknown>,
+      },
+    },
+    {
+      type: "function",
+      function: {
+        name: "listSessions",
+        description:
+          "The user's session history, optionally for one task and/or a date range (YYYY-MM-DD). Use when they ask how consistent they have been, or what they did on a particular day.",
+        parameters: zodToJsonSchema(listSessionsInputSchema) as Record<string, unknown>,
+      },
+    },
+    {
+      type: "function",
+      function: {
         name: "createSubtasks",
         description:
           "Create the given steps under a task. Requires the user's confirmation, so pass the exact step titles they agreed to — usually the ones proposeTaskBreakdown returned.",
@@ -173,9 +225,18 @@ export interface ToolContext {
   db: Database;
   taskService: TaskService;
   reminderService: ReminderService;
+  sessionService: SessionService;
   notion?: NotionClient;
   tavily?: TavilyClient;
   breakdown?: TaskBreakdownService;
+}
+
+async function resolveTimezone(ctx: ToolContext): Promise<string> {
+  const [user] = await ctx.db
+    .select({ timezone: schema.users.timezone })
+    .from(schema.users)
+    .where(eq(schema.users.id, ctx.userId));
+  return user?.timezone ?? "Asia/Bangkok";
 }
 
 /**
@@ -249,6 +310,34 @@ export async function executeTool(
       }
 
       return { taskId: task.id, taskTitle: task.title, steps };
+    }
+    case "listToday": {
+      // Both halves, because they answer different questions: what has been
+      // committed to, and what the month still needs. A caller comparing them
+      // is how "1h planned of the 1.2h today wants" gets said.
+      const timezone = await resolveTimezone(ctx);
+      const date = dateKeyInTimezone(new Date(), timezone);
+      const [sessions, now] = await Promise.all([
+        ctx.sessionService.listSessionsForDate(ctx.userId, date),
+        ctx.taskService.listNowTasks(ctx.userId),
+      ]);
+      return { date, timezone, sessions, ongoing: now.ongoing };
+    }
+    case "planSession": {
+      const input = planSessionInputSchema.parse(rawArgs);
+      return ctx.sessionService.planSession(ctx.userId, input);
+    }
+    case "completeSession": {
+      const input = completeSessionInputSchema.parse(rawArgs);
+      return ctx.sessionService.completeSession(ctx.userId, input);
+    }
+    case "skipSession": {
+      const input = skipSessionInputSchema.parse(rawArgs);
+      return ctx.sessionService.skipSession(ctx.userId, input);
+    }
+    case "listSessions": {
+      const input = listSessionsInputSchema.parse(rawArgs);
+      return ctx.sessionService.listSessions(ctx.userId, input);
     }
     case "createSubtasks": {
       const input = createSubtasksInputSchema.parse(rawArgs);

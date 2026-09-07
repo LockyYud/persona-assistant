@@ -9,7 +9,9 @@ import type {
   ChatResult,
   PendingApproval,
   ReminderService,
+  SessionService,
   TaskService,
+  TaskWithProgress,
   TriggeredWorkflowInput,
 } from "@persona/core";
 import type { TaskBreakdownService } from "../services/task-breakdown.js";
@@ -30,6 +32,7 @@ import {
   upsertMemory,
 } from "../memory/repository.js";
 import { generateConversationTitle } from "./conversation-title.js";
+import { describePace } from "../services/pace.js";
 
 const BASE_SYSTEM_PROMPT = `You are Duy's personal assistant. You can create and manage tasks
 and reminders on his behalf using the provided tools. Always confirm what you did in plain,
@@ -42,6 +45,17 @@ listNowTasks or listTasks. Never use notion_search or notion_get_page to hunt fo
 are only for his other Notion notes and documents, and using them for tasks returns worse
 answers, slower. Prefer listNowTasks when he asks what needs attention, and listTasks when he
 wants the full list or a specific status.
+
+Two of his tasks work differently from the rest, and the difference matters. A task carrying a
+monthly target (20 hours of English a month, say) is a ROUTINE: it is pursued at a rate rather
+than finished once, it normally sits at status in_progress, and it never becomes "done". For
+those, each day he decides how much time to give it, and you record that with planSession —
+"today I'll study English for an hour" is planSession, not a new task and not a subtask. Do not
+call completeTask on a routine; complete the day's session instead.
+
+Keep sessions and steps apart. A task's STEPS (listSubtasks, createSubtasks) are parts of the
+thing being produced — "Chapter 1", "Chapter 2". A SESSION is time spent on a day. A routine
+usually has sessions and no steps; an ordinary task may have steps and needs no sessions.
 
 Some actions require the user's explicit confirmation before they run. When a tool result says
 an action is pending confirmation, tell the user what it would do and that a Confirm/Cancel
@@ -83,6 +97,7 @@ export class OpenAICompatibleAgentAdapter implements AgentRuntime {
     private readonly db: Database,
     private readonly taskService: TaskService,
     private readonly reminderService: ReminderService,
+    private readonly sessionService: SessionService,
     provider: LlmProviderConfig,
     private readonly notion?: NotionClient,
     private readonly tavily?: TavilyClient,
@@ -104,11 +119,23 @@ export class OpenAICompatibleAgentAdapter implements AgentRuntime {
     const history = await loadRecentMessages(this.db, conversationId);
     const memories = await loadTopMemories(this.db, input.userId);
     const pendingApproval = await getPendingApproval(this.db, input.userId);
+    // Injected rather than left to a tool call: without the month's standing
+    // in front of it, the model cannot answer "am I on track" or propose a
+    // sensible length for today without first guessing that it should go
+    // looking. Only the actively-pursued routines are loaded, so a user with
+    // none pays nothing for this.
+    const { ongoing } = await this.taskService.listNowTasks(input.userId);
 
     const messages: ChatCompletionMessageParam[] = [
       {
         role: "system",
-        content: buildSystemPrompt(memories, pendingApproval, !!this.notion, !!this.tavily),
+        content: buildSystemPrompt(
+          memories,
+          pendingApproval,
+          !!this.notion,
+          !!this.tavily,
+          ongoing,
+        ),
       },
       ...history,
       { role: "user", content: input.message },
@@ -242,6 +269,7 @@ export class OpenAICompatibleAgentAdapter implements AgentRuntime {
         db: this.db,
         taskService: this.taskService,
         reminderService: this.reminderService,
+        sessionService: this.sessionService,
         notion: this.notion,
         tavily: this.tavily,
         breakdown: this.breakdown,
@@ -380,6 +408,7 @@ function buildSystemPrompt(
   pendingApproval: (typeof schema.approvalRequests.$inferSelect) | null,
   notionEnabled: boolean,
   webSearchEnabled: boolean,
+  ongoing: TaskWithProgress[],
 ): string {
   const sections = [
     BASE_SYSTEM_PROMPT,
@@ -398,6 +427,19 @@ function buildSystemPrompt(
     sections.push(
       "You can search the public web using web_search when the user asks about current events, " +
         "recent information, or anything requiring an internet lookup beyond your training data.",
+    );
+  }
+
+  const paced = ongoing.filter((task) => task.pace !== null);
+  if (paced.length > 0) {
+    const lines = paced
+      .map((task) => `- [${task.id}] ${describePace(task.title, task.pace!)}`)
+      .join("\n");
+    sections.push(
+      `The user's routines this calendar month:\n${lines}\n` +
+        `When he asks what to do today, or whether he is on track, answer from these — the ` +
+        `suggested minutes already account for what is left and how much of the month remains. ` +
+        `Record whatever he picks with planSession, using the task id in brackets.`,
     );
   }
 

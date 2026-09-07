@@ -29,8 +29,17 @@ function candidateOffsets(task: Task): Array<{ kind: ReminderKind; minutesBefore
   const offsets: Array<{ kind: ReminderKind; minutesBeforeDue: number }> = [
     { kind: "early", minutesBeforeDue: EARLY_MINUTES },
     { kind: "due", minutesBeforeDue: 0 },
-    { kind: "overdue", minutesBeforeDue: -OVERDUE_MINUTES },
   ];
+
+  // A routine — a task pursued at a rate rather than finished once — never
+  // goes overdue. It is left out of the Now view's overdue bucket for that
+  // reason, and telling the user over Telegram that one is overdue would
+  // contradict the screen. A deadline it happens to carry still earns the
+  // heads-up ones: the exam really is on that date. Only the user cancelling
+  // the task ends a routine.
+  if (task.monthlyTargetMinutes === null) {
+    offsets.push({ kind: "overdue", minutesBeforeDue: -OVERDUE_MINUTES });
+  }
 
   if (task.priority === "urgent") {
     offsets.unshift({ kind: "urgent_early", minutesBeforeDue: URGENT_EARLY_MINUTES });
