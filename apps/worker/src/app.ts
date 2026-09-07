@@ -12,12 +12,17 @@ import {
 } from "@persona/integrations";
 import {
   chatInputSchema,
+  completeSessionInputSchema,
   createTaskInputSchema,
+  dateKeySchema,
+  listSessionsInputSchema,
+  planSessionInputSchema,
   updateTaskInputSchema,
   type AgentRuntime,
 } from "@persona/core";
 import { config } from "./config.js";
 import { DrizzleTaskService } from "./services/task-service.js";
+import { DrizzleSessionService } from "./services/session-service.js";
 import { DrizzleReminderService } from "./services/reminder-service.js";
 import { TaskBreakdownService } from "./services/task-breakdown.js";
 import { OpenAICompatibleAgentAdapter } from "./agent/openai-compatible-adapter.js";
@@ -31,6 +36,7 @@ import {
   revokeDesktopToken,
   verifyDesktopToken,
 } from "./auth/desktop-token.js";
+import { dateKeyInTimezone } from "./services/local-time.js";
 import { runTick } from "./scheduler/tick.js";
 import { makeChatIdResolver } from "./scheduler/chat-id-resolver.js";
 import {
@@ -81,6 +87,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   const notion = config.notionApiKey ? new NotionClient(config.notionApiKey) : undefined;
   const taskService = new DrizzleTaskService(db, notion, config.notionTasksDatabaseId);
   const reminderService = new DrizzleReminderService(db);
+  const sessionService = new DrizzleSessionService(db, notion, config.notionSessionsDatabaseId);
   const tavily = config.tavilyApiKey ? new TavilyClient(config.tavilyApiKey) : undefined;
   const breakdown = new TaskBreakdownService(config.llm, config.llm.breakdownModel);
   // Own client: the briefing runs from the scheduler tick, with no chat turn
@@ -92,6 +99,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       db,
       taskService,
       reminderService,
+      sessionService,
       config.llm,
       notion,
       tavily,
@@ -121,6 +129,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       db,
       taskService,
       reminderService,
+      sessionService,
     });
     return { ok: true, result };
   }
@@ -339,6 +348,100 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     },
   );
 
+  /**
+   * "What am I doing today", for one user: the sessions they picked for their
+   * own current day, plus the routines still asking for time.
+   *
+   * The two halves answer different questions and neither replaces the other —
+   * `sessions` is what has been committed to, `ongoing` is what the month still
+   * needs, each carrying the minutes to suggest. A routine appears in both when
+   * it has already been planned today, which is what lets a caller show "1h
+   * planned of the 1.2h today wants".
+   */
+  async function loadToday(userId: string, date?: string) {
+    const timezone = await resolveUserTimezone(userId);
+    const resolved = date ?? dateKeyInTimezone(new Date(), timezone);
+    const [sessions, now] = await Promise.all([
+      sessionService.listSessionsForDate(userId, resolved),
+      taskService.listNowTasks(userId),
+    ]);
+    return { date: resolved, timezone, sessions, ongoing: now.ongoing };
+  }
+
+  async function resolveUserTimezone(userId: string): Promise<string> {
+    const [user] = await db.select().from(schema.users).where(eq(schema.users.id, userId));
+    return user?.timezone ?? "Asia/Bangkok";
+  }
+
+  app.get<{ Querystring: { userId: string; date?: string } }>(
+    "/sessions/today",
+    async (request, reply) => {
+      const { userId, date } = request.query;
+      if (!userId) return reply.code(400).send({ error: "userId is required" });
+      if (date && !dateKeySchema.safeParse(date).success) {
+        return reply.code(400).send({ error: "date must be YYYY-MM-DD" });
+      }
+
+      return loadToday(userId, date);
+    },
+  );
+
+  app.get<{ Querystring: { userId: string; taskId?: string; from?: string; to?: string } }>(
+    "/sessions",
+    async (request, reply) => {
+      const { userId, ...rest } = request.query;
+      if (!userId) return reply.code(400).send({ error: "userId is required" });
+
+      const parsed = listSessionsInputSchema.safeParse(rest);
+      if (!parsed.success) return reply.code(400).send({ error: parsed.error.flatten() });
+
+      const sessions = await sessionService.listSessions(userId, parsed.data);
+      return { sessions };
+    },
+  );
+
+  app.post<{ Body: { userId?: string } & Record<string, unknown> }>(
+    "/sessions",
+    async (request, reply) => {
+      const { userId, ...rest } = request.body ?? {};
+      if (!userId) return reply.code(400).send({ error: "userId is required" });
+
+      const parsed = planSessionInputSchema.safeParse(rest);
+      if (!parsed.success) return reply.code(400).send({ error: parsed.error.flatten() });
+
+      const session = await sessionService.planSession(userId, parsed.data);
+      return reply.code(201).send({ session });
+    },
+  );
+
+  app.post<{ Params: { id: string }; Body: { userId?: string; actualMinutes?: number } }>(
+    "/sessions/:id/complete",
+    async (request, reply) => {
+      const { userId, actualMinutes } = request.body ?? {};
+      if (!userId) return reply.code(400).send({ error: "userId is required" });
+
+      const parsed = completeSessionInputSchema.safeParse({
+        sessionId: request.params.id,
+        actualMinutes,
+      });
+      if (!parsed.success) return reply.code(400).send({ error: parsed.error.flatten() });
+
+      const session = await sessionService.completeSession(userId, parsed.data);
+      return { session };
+    },
+  );
+
+  app.post<{ Params: { id: string }; Body: { userId?: string } }>(
+    "/sessions/:id/skip",
+    async (request, reply) => {
+      const { userId } = request.body ?? {};
+      if (!userId) return reply.code(400).send({ error: "userId is required" });
+
+      const session = await sessionService.skipSession(userId, { sessionId: request.params.id });
+      return { session };
+    },
+  );
+
   // --- Desktop routes: gated by a desktop token (see requireDesktopUserId
   // above), never by the BFF shared secret and never by a client userId. ---
 
@@ -430,6 +533,57 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
         status: parsed.data,
       });
       return { task };
+    },
+  );
+
+  /**
+   * The widget's home screen: today's commitments and what still wants time.
+   * No date parameter — a panel on a screen is always asking about now, and
+   * accepting one would only add a way to get it wrong.
+   */
+  app.get("/desktop/today", async (request, reply) => {
+    const userId = await requireDesktopUserId(request, reply);
+    if (!userId) return;
+
+    return loadToday(userId);
+  });
+
+  app.post("/desktop/sessions", async (request, reply) => {
+    const userId = await requireDesktopUserId(request, reply);
+    if (!userId) return;
+
+    const parsed = planSessionInputSchema.safeParse(request.body);
+    if (!parsed.success) return reply.code(400).send({ error: parsed.error.flatten() });
+
+    const session = await sessionService.planSession(userId, parsed.data);
+    return reply.code(201).send({ session });
+  });
+
+  app.post<{ Params: { id: string }; Body: { actualMinutes?: number } }>(
+    "/desktop/sessions/:id/complete",
+    async (request, reply) => {
+      const userId = await requireDesktopUserId(request, reply);
+      if (!userId) return;
+
+      const parsed = completeSessionInputSchema.safeParse({
+        sessionId: request.params.id,
+        actualMinutes: request.body?.actualMinutes,
+      });
+      if (!parsed.success) return reply.code(400).send({ error: parsed.error.flatten() });
+
+      const session = await sessionService.completeSession(userId, parsed.data);
+      return { session };
+    },
+  );
+
+  app.post<{ Params: { id: string } }>(
+    "/desktop/sessions/:id/skip",
+    async (request, reply) => {
+      const userId = await requireDesktopUserId(request, reply);
+      if (!userId) return;
+
+      const session = await sessionService.skipSession(userId, { sessionId: request.params.id });
+      return { session };
     },
   );
 

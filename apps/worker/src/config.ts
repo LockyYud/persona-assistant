@@ -20,6 +20,11 @@ export const config = {
   // meaningful together with NOTION_API_KEY; unset to keep Notion read-only
   // (search/get_page tools) without the task sync.
   notionTasksDatabaseId: process.env.NOTION_TASKS_DATABASE_ID || undefined,
+  // Notion database that receives the day-planning sessions (see
+  // notion-session-sync.ts). Separate from the tasks database because a
+  // session is a different kind of row, and mirrored one way only — nothing
+  // is read back from it. Unset to keep sessions out of Notion entirely.
+  notionSessionsDatabaseId: process.env.NOTION_SESSIONS_DATABASE_ID || undefined,
   tavilyApiKey: process.env.TAVILY_API_KEY || undefined,
   llm: {
     apiKey: required("LLM_API_KEY"),
