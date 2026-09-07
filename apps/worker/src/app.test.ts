@@ -42,6 +42,7 @@ describe("desktop routes", () => {
       overdue: [],
       today: [],
       nextUp: null,
+      future: [],
       unscheduledCount: 0,
       unscheduled: [],
     });
@@ -118,6 +119,94 @@ describe("desktop routes", () => {
     expect(tooLow.statusCode).toBe(400);
     expect(tooHigh.statusCode).toBe(400);
     expect(valid.statusCode).toBe(200);
+  });
+
+  it("moves a task between open and in_progress via POST /desktop/tasks/:id/status", async () => {
+    const app = buildApp({ db: getTestDb() });
+    const userId = await createTestUser();
+    const { raw } = await mintDesktopToken(getTestDb(), userId, "test");
+
+    const createResponse = await app.inject({
+      method: "POST",
+      url: "/desktop/tasks",
+      headers: { authorization: `Bearer ${raw}` },
+      payload: { title: "Start me" },
+    });
+    const task = createResponse.json().task;
+    expect(task.status).toBe("open");
+
+    const started = await app.inject({
+      method: "POST",
+      url: `/desktop/tasks/${task.id}/status`,
+      headers: { authorization: `Bearer ${raw}` },
+      payload: { status: "in_progress" },
+    });
+    expect(started.statusCode).toBe(200);
+    expect(started.json().task.status).toBe("in_progress");
+
+    const stopped = await app.inject({
+      method: "POST",
+      url: `/desktop/tasks/${task.id}/status`,
+      headers: { authorization: `Bearer ${raw}` },
+      payload: { status: "open" },
+    });
+    expect(stopped.statusCode).toBe(200);
+    expect(stopped.json().task.status).toBe("open");
+  });
+
+  it("refuses done/cancelled on the desktop status route — completing is /complete's job", async () => {
+    const app = buildApp({ db: getTestDb() });
+    const userId = await createTestUser();
+    const { raw } = await mintDesktopToken(getTestDb(), userId, "test");
+
+    const createResponse = await app.inject({
+      method: "POST",
+      url: "/desktop/tasks",
+      headers: { authorization: `Bearer ${raw}` },
+      payload: { title: "Not closeable this way" },
+    });
+    const task = createResponse.json().task;
+
+    for (const status of ["done", "cancelled", "nonsense", undefined]) {
+      const response = await app.inject({
+        method: "POST",
+        url: `/desktop/tasks/${task.id}/status`,
+        headers: { authorization: `Bearer ${raw}` },
+        payload: { status },
+      });
+      expect(response.statusCode).toBe(400);
+    }
+
+    const unchanged = await app.inject({
+      method: "GET",
+      url: "/desktop/tasks/now",
+      headers: { authorization: `Bearer ${raw}` },
+    });
+    expect(unchanged.json().now.unscheduled[0].status).toBe("open");
+  });
+
+  it("404s the desktop status route for a task belonging to another user", async () => {
+    const app = buildApp({ db: getTestDb() });
+    const ownerId = await createTestUser();
+    const otherId = await createTestUser();
+    const { raw: otherToken } = await mintDesktopToken(getTestDb(), otherId, "test");
+    const { raw: ownerToken } = await mintDesktopToken(getTestDb(), ownerId, "test");
+
+    const createResponse = await app.inject({
+      method: "POST",
+      url: "/desktop/tasks",
+      headers: { authorization: `Bearer ${ownerToken}` },
+      payload: { title: "Someone else's task" },
+    });
+    const task = createResponse.json().task;
+
+    const response = await app.inject({
+      method: "POST",
+      url: `/desktop/tasks/${task.id}/status`,
+      headers: { authorization: `Bearer ${otherToken}` },
+      payload: { status: "in_progress" },
+    });
+    expect(response.statusCode).toBe(404);
   });
 
   it("creates a task via POST /desktop/tasks, scoped to the token's user", async () => {

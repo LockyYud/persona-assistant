@@ -1,6 +1,7 @@
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from "fastify";
 import bcrypt from "bcryptjs";
 import OpenAI from "openai";
+import { z } from "zod";
 import { eq } from "drizzle-orm";
 import { createDb, schema, type Database } from "@persona/db";
 import {
@@ -55,6 +56,8 @@ export interface BuildAppOptions {
 // keep snooze from being usable as a general-purpose "reschedule to
 // anything" primitive: 5 minutes minimum (below that, just wait), 1 week
 // maximum (beyond that, edit the task's due date directly instead).
+const desktopStatusSchema = z.enum(["open", "in_progress"]);
+
 const SNOOZE_MIN_MINUTES = 5;
 const SNOOZE_MAX_MINUTES = 10_080;
 
@@ -393,6 +396,38 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       const task = await taskService.updateTask(userId, {
         taskId: request.params.taskId,
         dueAt: dueAt.toISOString(),
+      });
+      return { task };
+    },
+  );
+
+  /**
+   * Move a task between the two *working* statuses. Deliberately narrower
+   * than updateTask's full status enum: "done" belongs to /complete (which
+   * also settles reminders and rolls the parent's progress up), and
+   * "cancelled" is a decision that should not be one stray click away in a
+   * desktop panel. So this accepts open <-> in_progress and nothing else.
+   *
+   * updateTask already pushes Status to the task's Notion page, so starting a
+   * task here shows up in Notion without any extra work.
+   */
+  app.post<{ Params: { taskId: string }; Body: { status?: string } }>(
+    "/desktop/tasks/:taskId/status",
+    async (request, reply) => {
+      const userId = await requireDesktopUserId(request, reply);
+      if (!userId) return;
+
+      const parsed = desktopStatusSchema.safeParse(request.body?.status);
+      if (!parsed.success) {
+        return reply.code(400).send({ error: 'status must be "open" or "in_progress"' });
+      }
+
+      const existing = await taskService.getTask(userId, request.params.taskId);
+      if (!existing) return reply.code(404).send({ error: "task not found" });
+
+      const task = await taskService.updateTask(userId, {
+        taskId: request.params.taskId,
+        status: parsed.data,
       });
       return { task };
     },

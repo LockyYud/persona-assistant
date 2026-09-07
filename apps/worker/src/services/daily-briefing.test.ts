@@ -58,6 +58,7 @@ function nowTasks(overrides: Partial<NowTasks> = {}): NowTasks {
     overdue: [],
     today: [],
     nextUp: null,
+    future: [],
     unscheduledCount: 0,
     unscheduled: [],
     ...overrides,

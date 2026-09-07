@@ -20,6 +20,11 @@ import { dateKeyInTimezone } from "./local-time.js";
 // Unscheduled tasks aren't time-bounded, so a very old backlog could grow
 // without limit — cap the returned list; unscheduledCount stays the true total.
 const UNSCHEDULED_LIST_CAP = 20;
+// Future-dated tasks used to be summarised by a single `nextUp`; the list is
+// returned in full (capped the same way) so a client grouping by status can
+// show an in-progress task that happens to be due next week instead of
+// dropping it.
+const FUTURE_LIST_CAP = 20;
 
 function toDomainTask(row: typeof schema.tasks.$inferSelect): Task {
   return {
@@ -272,6 +277,7 @@ export class DrizzleTaskService implements TaskService {
       overdue,
       today,
       nextUp,
+      future: future.slice(0, FUTURE_LIST_CAP),
       unscheduledCount: unscheduled.length,
       unscheduled: unscheduled.slice(0, UNSCHEDULED_LIST_CAP),
     };

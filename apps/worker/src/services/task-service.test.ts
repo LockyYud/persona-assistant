@@ -48,8 +48,41 @@ describe("DrizzleTaskService.listNowTasks", () => {
     // nextUp only surfaces when overdue/today are both empty, so with an
     // overdue task present it must stay null even though `future` exists.
     expect(result.nextUp).toBeNull();
+    // ...but it is still returned in `future`, so a client that groups by
+    // status rather than by schedule doesn't lose it.
+    expect(result.future.map((t) => t.id)).toEqual([future.id]);
     expect(result.unscheduledCount).toBe(2);
-    void future;
+  });
+
+  it("returns every future-dated task soonest-first, not just the nextUp one", async () => {
+    const now = new Date("2026-01-15T05:00:00.000Z");
+    vi.useFakeTimers();
+    vi.setSystemTime(now);
+
+    const userId = await createTestUser("Asia/Bangkok");
+    const service = new DrizzleTaskService(getTestDb());
+
+    const day = 24 * 60 * 60 * 1000;
+    // Created out of order so the assertion proves sorting, not insertion order.
+    const nextWeek = await service.createTask(userId, {
+      title: "Due next week",
+      priority: "medium",
+      type: "personal",
+      dueAt: new Date(now.getTime() + 7 * day).toISOString(),
+    });
+    const tomorrow = await service.createTask(userId, {
+      title: "Due tomorrow",
+      priority: "medium",
+      type: "personal",
+      dueAt: new Date(now.getTime() + day).toISOString(),
+    });
+
+    const result = await service.listNowTasks(userId);
+
+    expect(result.future.map((t) => t.id)).toEqual([tomorrow.id, nextWeek.id]);
+    // nextUp stays the first of that list rather than becoming a separate
+    // source of truth — callers grouping by schedule keep working unchanged.
+    expect(result.nextUp?.id).toBe(tomorrow.id);
   });
 
   it("returns unscheduled tasks oldest-first, not just a count", async () => {

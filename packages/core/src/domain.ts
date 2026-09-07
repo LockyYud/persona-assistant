@@ -67,7 +67,21 @@ export interface Reminder {
 export interface NowTasks {
   overdue: TaskWithProgress[];
   today: TaskWithProgress[];
+  /**
+   * The single soonest future-dated task, or null when anything is already
+   * overdue or due today. Kept as its own field because callers that group by
+   * schedule (the daily briefing, the web list) present it as one highlighted
+   * "next up" line rather than as a list.
+   */
   nextUp: TaskWithProgress | null;
+  /**
+   * Every task due after today, soonest first, capped — see FUTURE_LIST_CAP.
+   * `nextUp` is this list's first entry when it is set, so a caller that
+   * groups by *status* rather than by schedule can read `future` alone and
+   * not silently lose a task it should have shown. Grouping by schedule
+   * should keep using `nextUp`.
+   */
+  future: TaskWithProgress[];
   /** Open tasks with no dueAt at all — never dropped silently. */
   unscheduledCount: number;
   /** The unscheduled tasks themselves, oldest first, capped — see UNSCHEDULED_LIST_CAP. */
