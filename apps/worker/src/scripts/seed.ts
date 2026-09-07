@@ -1,6 +1,7 @@
-import { schema, createDb } from "@persona/db";
+import { schema, createDb, loadRootEnv } from "@persona/db";
 
 async function main() {
+  loadRootEnv();
   const databaseUrl = process.env.DATABASE_URL;
   const email = process.env.AUTH_ALLOWED_EMAIL;
   if (!databaseUrl || !email) {
