@@ -1,12 +1,23 @@
 import type {
+  CompleteSessionInput,
   CompleteTaskInput,
   CreateReminderInput,
   CreateSubtasksInput,
   CreateTaskInput,
+  ListSessionsInput,
   ListTasksInput,
+  PlanSessionInput,
+  SkipSessionInput,
   UpdateTaskInput,
 } from "./schemas.js";
-import type { NowTasks, Reminder, Task, TaskWithProgress } from "./domain.js";
+import type {
+  NowTasks,
+  Reminder,
+  Task,
+  TaskWithProgress,
+  WorkSession,
+  WorkSessionWithTask,
+} from "./domain.js";
 
 export interface TaskService {
   createTask(userId: string, input: CreateTaskInput): Promise<Task>;
@@ -25,4 +36,21 @@ export interface TaskService {
 export interface ReminderService {
   createReminder(userId: string, input: CreateReminderInput): Promise<Reminder>;
   cancelReminder(userId: string, reminderId: string): Promise<void>;
+}
+
+/**
+ * The day-planning surface: which goals get time today, and how much.
+ *
+ * Separate from TaskService because it answers a different question. A task's
+ * steps describe *what* has to be produced; sessions describe *when time was
+ * spent*. Nothing here creates or completes tasks.
+ */
+export interface SessionService {
+  /** Idempotent per (task, day) — re-planning revises the existing session. */
+  planSession(userId: string, input: PlanSessionInput): Promise<WorkSession>;
+  completeSession(userId: string, input: CompleteSessionInput): Promise<WorkSession>;
+  skipSession(userId: string, input: SkipSessionInput): Promise<WorkSession>;
+  /** What was picked for one local day, task included — the widget's "today". */
+  listSessionsForDate(userId: string, date: string): Promise<WorkSessionWithTask[]>;
+  listSessions(userId: string, input: ListSessionsInput): Promise<WorkSession[]>;
 }

@@ -55,6 +55,16 @@ export const tasks = pgTable(
       .notNull()
       .default("personal"),
     dueAt: timestamp("due_at", { withTimezone: true }),
+    // Set only on the handful of tasks that are pursued at a *rate* rather
+    // than finished once — "20 hours a month of English". Its presence is what
+    // makes a task a routine: the pace figures are derived from it, and a task
+    // without it has no pace at all. That absence is deliberately distinct from
+    // a pace of zero, exactly as `progress: null` means "not broken down"
+    // rather than "0% done". Nothing else about such a task differs — it keeps
+    // its own work/personal/chore type (a gym routine is still "personal"),
+    // and its status stays free so that flipping it to "open" is how a routine
+    // gets paused.
+    monthlyTargetMinutes: integer("monthly_target_minutes"),
     // A subtask points at its parent task; null for top-level tasks. Mirrors
     // the "Parent" relation in Notion. Cascades, so deleting a parent takes
     // its steps with it — a step has no meaning without the task it belongs
@@ -314,3 +324,82 @@ export const desktopTokens = pgTable("desktop_tokens", {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
+
+/**
+ * One day's worth of deliberate work on a task: "today I'll spend an hour on
+ * English". Sessions are never generated from a recurrence rule — they exist
+ * only because the user picked that task for that day, from the desktop widget
+ * or in chat. That is the whole reason there is no routine-definition table
+ * here: there is no rule to store, no horizon to materialise ahead, and
+ * nothing to clean up when the plan changes.
+ *
+ * Kept out of `tasks` on purpose. A task's subtasks are *steps* — units of the
+ * thing being produced ("Chapter 1", "Chapter 2") — and progress counts them.
+ * Sessions are units of *time spent*, so folding the two into one table would
+ * make `done/total` add chapters to weekdays. Keeping them apart also means
+ * the two rules steps obey ("a step has no due date of its own", "a step never
+ * appears in the Now view as its own entry") stay true as written, instead of
+ * each growing an "unless it is a session" branch.
+ */
+export const workSessions = pgTable(
+  "work_sessions",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    // The goal the time is being spent on. Always a top-level task in
+    // practice; nothing here enforces that.
+    taskId: uuid("task_id")
+      .notNull()
+      .references(() => tasks.id, { onDelete: "cascade" }),
+    // The user's local calendar day, not a timestamp: "have I already planned
+    // this task today?" is a question about *their* day, and storing the day
+    // directly answers it with no timezone arithmetic. Same reasoning as
+    // users.last_briefing_on.
+    date: date("date", { mode: "string" }).notNull(),
+    // Only set when the session is meant to happen at a particular time. Two
+    // consequences: it is what earns the session a reminder, and it is what
+    // makes it render as a time block rather than an all-day item on a
+    // calendar. A session without it is still a real commitment for the day.
+    startAt: timestamp("start_at", { withTimezone: true }),
+    plannedMinutes: integer("planned_minutes").notNull(),
+    // Null until the session is closed out. On completion an omitted value
+    // falls back to plannedMinutes — that is what makes simply ticking a
+    // session off count as having spent the time committed to, while still
+    // allowing "I only managed 20 minutes" to be recorded honestly.
+    actualMinutes: integer("actual_minutes"),
+    // "skipped" is a deliberate pass and is excluded from the pace numerator;
+    // a "planned" session whose day has gone by is a miss. The distinction
+    // only survives because sessions are never deleted — delete the misses
+    // and adherence reads 100% forever.
+    status: text("status", { enum: ["planned", "done", "skipped"] })
+      .notNull()
+      .default("planned"),
+    // The one reminder a session gets, when it was given a start time. Held
+    // here rather than as a column on `reminders` so that table — the most
+    // reliability-critical one in the app — needs no change at all: a session
+    // reminder is an ordinary manual reminder on the parent task, and rides
+    // the existing trigger_run/outbox pipeline untouched. Nulled rather than
+    // cascaded on delete, since losing a reminder must not take the record of
+    // the work with it.
+    reminderId: uuid("reminder_id").references(() => reminders.id, { onDelete: "set null" }),
+    notionPageId: text("notion_page_id"),
+    notionSyncedAt: timestamp("notion_synced_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    // At most one session per task per day, so "how long did I spend on this
+    // today" stays a single number to read and a single row to edit. Splitting
+    // a day into a morning and an evening block would mean dropping this and
+    // summing instead.
+    taskDateUnique: uniqueIndex("work_sessions_task_date_idx").on(table.taskId, table.date),
+    // Drives both "what did I pick for today" and the month window the pace
+    // figures are computed over.
+    userDateIdx: index("work_sessions_user_date_idx").on(table.userId, table.date),
+    notionPageIdUnique: uniqueIndex("work_sessions_notion_page_id_idx")
+      .on(table.notionPageId)
+      .where(sql`${table.notionPageId} is not null`),
+  }),
+);

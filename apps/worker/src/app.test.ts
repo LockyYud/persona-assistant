@@ -43,6 +43,7 @@ describe("desktop routes", () => {
       today: [],
       nextUp: null,
       future: [],
+      ongoing: [],
       unscheduledCount: 0,
       unscheduled: [],
     });

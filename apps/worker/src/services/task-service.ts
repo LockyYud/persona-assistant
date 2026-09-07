@@ -1,4 +1,4 @@
-import { and, asc, eq, inArray, isNull, ne, sql } from "drizzle-orm";
+import { and, asc, eq, gte, inArray, isNull, lte, ne, sql } from "drizzle-orm";
 import { schema, type Database } from "@persona/db";
 import type {
   CompleteTaskInput,
@@ -6,6 +6,7 @@ import type {
   CreateTaskInput,
   ListTasksInput,
   NowTasks,
+  Pace,
   Task,
   TaskProgress,
   TaskService,
@@ -15,7 +16,9 @@ import type {
 import type { NotionClient } from "@persona/integrations";
 import { cancelAutoReminders, deriveTaskReminders } from "./reminder-derivation.js";
 import { pushTaskToNotion } from "./notion-sync.js";
-import { dateKeyInTimezone } from "./local-time.js";
+import { toDomainTask } from "./task-mapper.js";
+import { dateKeyInTimezone, localMonth, type LocalMonth } from "./local-time.js";
+import { computePace } from "./pace.js";
 
 // Unscheduled tasks aren't time-bounded, so a very old backlog could grow
 // without limit — cap the returned list; unscheduledCount stays the true total.
@@ -25,23 +28,6 @@ const UNSCHEDULED_LIST_CAP = 20;
 // show an in-progress task that happens to be due next week instead of
 // dropping it.
 const FUTURE_LIST_CAP = 20;
-
-function toDomainTask(row: typeof schema.tasks.$inferSelect): Task {
-  return {
-    id: row.id,
-    userId: row.userId,
-    title: row.title,
-    description: row.description,
-    status: row.status,
-    priority: row.priority,
-    type: row.type,
-    dueAt: row.dueAt,
-    parentTaskId: row.parentTaskId,
-    notionPageId: row.notionPageId,
-    createdAt: row.createdAt,
-    updatedAt: row.updatedAt,
-  };
-}
 
 export class DrizzleTaskService implements TaskService {
   constructor(
@@ -57,6 +43,87 @@ export class DrizzleTaskService implements TaskService {
   private async syncToNotion(task: Task): Promise<Task> {
     if (!this.notion || !this.notionDatabaseId) return task;
     return pushTaskToNotion(this.db, this.notion, this.notionDatabaseId, task);
+  }
+
+  private async resolveTimezone(userId: string): Promise<string> {
+    const [user] = await this.db.select().from(schema.users).where(eq(schema.users.id, userId));
+    return user?.timezone ?? "Asia/Bangkok";
+  }
+
+  /**
+   * Minutes credited to each task this calendar month, keyed by task id.
+   *
+   * Only "done" sessions count. A session still sitting at "planned" is an
+   * intention, and pace has to describe what actually happened or it cannot
+   * detect the exact failure it exists to catch — days that were planned and
+   * then not done. "skipped" is excluded as a deliberate pass. Where a
+   * completed session carries no actualMinutes, the minutes it committed to
+   * are credited, which is what makes ticking one off enough.
+   */
+  private async loadMonthlySpend(
+    userId: string,
+    taskIds: string[],
+    month: LocalMonth,
+  ): Promise<Map<string, number>> {
+    const spend = new Map<string, number>();
+    if (taskIds.length === 0) return spend;
+
+    const rows = await this.db
+      .select({
+        taskId: schema.workSessions.taskId,
+        spent: sql<number>`coalesce(sum(coalesce(${schema.workSessions.actualMinutes}, ${schema.workSessions.plannedMinutes})), 0)::int`,
+      })
+      .from(schema.workSessions)
+      .where(
+        and(
+          eq(schema.workSessions.userId, userId),
+          inArray(schema.workSessions.taskId, taskIds),
+          eq(schema.workSessions.status, "done"),
+          gte(schema.workSessions.date, month.firstDate),
+          lte(schema.workSessions.date, month.lastDate),
+        ),
+      )
+      .groupBy(schema.workSessions.taskId);
+
+    for (const row of rows) spend.set(row.taskId, row.spent);
+    return spend;
+  }
+
+  /**
+   * Pace for the routine tasks among `parents`, keyed by task id. A task with
+   * no monthlyTargetMinutes is absent from the map rather than present with a
+   * zeroed pace — "not a routine" must not look like "a routine with nothing
+   * done", the same distinction loadProgress draws for steps.
+   */
+  private async loadPace(
+    userId: string,
+    parents: Task[],
+    timezone: string,
+  ): Promise<Map<string, Pace>> {
+    const routines = parents.filter((task) => task.monthlyTargetMinutes !== null);
+    const pace = new Map<string, Pace>();
+    if (routines.length === 0) return pace;
+
+    const month = localMonth(new Date(), timezone);
+    const spend = await this.loadMonthlySpend(
+      userId,
+      routines.map((task) => task.id),
+      month,
+    );
+
+    for (const task of routines) {
+      pace.set(
+        task.id,
+        computePace({
+          targetMinutes: task.monthlyTargetMinutes as number,
+          spentMinutes: spend.get(task.id) ?? 0,
+          dayOfMonth: month.dayOfMonth,
+          daysInMonth: month.daysInMonth,
+        }),
+      );
+    }
+
+    return pace;
   }
 
   /**
@@ -102,10 +169,13 @@ export class DrizzleTaskService implements TaskService {
    * the steps were written in.
    */
   private async withProgress(
+    userId: string,
     parents: Task[],
     openSubtasks: Task[],
+    timezone: string,
   ): Promise<TaskWithProgress[]> {
     const progress = await this.loadProgress(parents.map((task) => task.id));
+    const pace = await this.loadPace(userId, parents, timezone);
 
     const nextStepByParent = new Map<string, Task>();
     for (const subtask of openSubtasks) {
@@ -120,6 +190,7 @@ export class DrizzleTaskService implements TaskService {
       ...task,
       progress: progress.get(task.id) ?? null,
       nextStep: nextStepByParent.get(task.id) ?? null,
+      pace: pace.get(task.id) ?? null,
     }));
   }
 
@@ -134,6 +205,7 @@ export class DrizzleTaskService implements TaskService {
           priority: input.priority,
           type: input.type,
           dueAt: input.dueAt ? new Date(input.dueAt) : null,
+          monthlyTargetMinutes: input.monthlyTargetMinutes ?? null,
           parentTaskId: input.parentTaskId ?? null,
         })
         .returning();
@@ -155,6 +227,9 @@ export class DrizzleTaskService implements TaskService {
       if (input.priority !== undefined) updates.priority = input.priority;
       if (input.type !== undefined) updates.type = input.type;
       if (input.dueAt !== undefined) updates.dueAt = input.dueAt ? new Date(input.dueAt) : null;
+      if (input.monthlyTargetMinutes !== undefined) {
+        updates.monthlyTargetMinutes = input.monthlyTargetMinutes;
+      }
       if (input.parentTaskId !== undefined) updates.parentTaskId = input.parentTaskId;
 
       const [row] = await tx
@@ -223,12 +298,11 @@ export class DrizzleTaskService implements TaskService {
               .orderBy(asc(schema.tasks.createdAt))
           ).map(toDomainTask);
 
-    return this.withProgress(parents, openSubtasks);
+    return this.withProgress(userId, parents, openSubtasks, await this.resolveTimezone(userId));
   }
 
   async listNowTasks(userId: string): Promise<NowTasks> {
-    const [user] = await this.db.select().from(schema.users).where(eq(schema.users.id, userId));
-    const timezone = user?.timezone ?? "Asia/Bangkok";
+    const timezone = await this.resolveTimezone(userId);
 
     const rows = await this.db
       .select()
@@ -240,8 +314,10 @@ export class DrizzleTaskService implements TaskService {
     // broken into 6 steps adds one line to the view rather than seven.
     const openSubtasks = openTasks.filter((task) => task.parentTaskId !== null);
     const tasks = await this.withProgress(
+      userId,
       openTasks.filter((task) => task.parentTaskId === null),
       openSubtasks,
+      timezone,
     );
 
     const now = new Date();
@@ -250,9 +326,23 @@ export class DrizzleTaskService implements TaskService {
     const overdue: TaskWithProgress[] = [];
     const today: TaskWithProgress[] = [];
     const future: TaskWithProgress[] = [];
+    const ongoing: TaskWithProgress[] = [];
     const unscheduled: TaskWithProgress[] = [];
 
     for (const task of tasks) {
+      // A routine being actively pursued is bucketed by its pace, never by a
+      // date. It is held out of the dueAt buckets entirely rather than also
+      // appearing in one, so it stays a single line; where it does have a
+      // deadline, that deadline still rides on the row itself and still
+      // drives its reminders, neither of which this bucketing touches.
+      //
+      // A routine sitting at "open" is a paused one and lands nowhere: no
+      // pace to answer for, and — unlike every other date-less task — no
+      // place in `unscheduled`, since it is not waiting to be scheduled.
+      if (task.monthlyTargetMinutes !== null) {
+        if (task.status === "in_progress") ongoing.push(task);
+        continue;
+      }
       if (!task.dueAt) {
         unscheduled.push(task);
         continue;
@@ -270,6 +360,8 @@ export class DrizzleTaskService implements TaskService {
     today.sort((a, b) => a.dueAt!.getTime() - b.dueAt!.getTime());
     future.sort((a, b) => a.dueAt!.getTime() - b.dueAt!.getTime());
     unscheduled.sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
+    // Furthest behind first — the one that most needs today's time.
+    ongoing.sort((a, b) => (a.pace?.deltaMinutes ?? 0) - (b.pace?.deltaMinutes ?? 0));
 
     const nextUp = overdue.length === 0 && today.length === 0 ? (future[0] ?? null) : null;
 
@@ -278,6 +370,7 @@ export class DrizzleTaskService implements TaskService {
       today,
       nextUp,
       future: future.slice(0, FUTURE_LIST_CAP),
+      ongoing,
       unscheduledCount: unscheduled.length,
       unscheduled: unscheduled.slice(0, UNSCHEDULED_LIST_CAP),
     };

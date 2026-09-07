@@ -4,12 +4,27 @@ export const taskStatusSchema = z.enum(["open", "in_progress", "done", "cancelle
 export const taskPrioritySchema = z.enum(["low", "medium", "high", "urgent"]);
 export const taskTypeSchema = z.enum(["work", "personal", "chore"]);
 
+/** Capped at the minutes in a 31-day month; beyond that it is a typo. */
+export const monthlyTargetMinutesSchema = z.number().int().min(1).max(31 * 24 * 60);
+
+/** A local calendar day, YYYY-MM-DD — the form work_sessions.date stores. */
+export const dateKeySchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "expected YYYY-MM-DD");
+
+/** One day's worth of work, so a whole day is the ceiling. */
+const sessionMinutesSchema = z.number().int().min(1).max(24 * 60);
+
 export const createTaskInputSchema = z.object({
   title: z.string().min(1).max(200),
   description: z.string().max(2000).optional(),
   priority: taskPrioritySchema.default("medium"),
   type: taskTypeSchema.default("personal"),
   dueAt: z.string().datetime().optional(),
+  /**
+   * Setting this is what makes the task a routine — one pursued at a rate
+   * ("20 hours a month") rather than finished once. Leave it off for ordinary
+   * tasks; there is no separate type or flag to set.
+   */
+  monthlyTargetMinutes: monthlyTargetMinutesSchema.optional(),
   /** Makes the new task a step of an existing one. */
   parentTaskId: z.string().uuid().optional(),
 });
@@ -23,6 +38,8 @@ export const updateTaskInputSchema = z.object({
   priority: taskPrioritySchema.optional(),
   type: taskTypeSchema.optional(),
   dueAt: z.string().datetime().nullable().optional(),
+  /** Pass null to stop treating the task as a routine; its sessions survive. */
+  monthlyTargetMinutes: monthlyTargetMinutesSchema.nullable().optional(),
   /** Pass null to promote a subtask back to a top-level task. */
   parentTaskId: z.string().uuid().nullable().optional(),
 });
@@ -89,3 +106,50 @@ export const internalTickSignatureHeaders = z.object({
   "x-signature": z.string(),
   "x-timestamp": z.string(),
 });
+
+export const workSessionStatusSchema = z.enum(["planned", "done", "skipped"]);
+
+/**
+ * Commits a stretch of today (or another day) to one task. Idempotent per
+ * (task, day): planning the same task again for the same day revises that
+ * session rather than failing, which is what "actually make it 90 minutes"
+ * has to mean when there can only be one session per task per day.
+ */
+export const planSessionInputSchema = z.object({
+  taskId: z.string().uuid(),
+  /** Defaults to the user's own today, resolved in their timezone. */
+  date: dateKeySchema.optional(),
+  plannedMinutes: sessionMinutesSchema,
+  /** Only for a session meant to happen at a set time; earns it a reminder. */
+  startAt: z.string().datetime().optional(),
+});
+export type PlanSessionInput = z.infer<typeof planSessionInputSchema>;
+
+/**
+ * Closes a session out as done. Omitting actualMinutes credits the minutes
+ * committed to — ticking a session off is the common case and should not
+ * require typing a number — while passing one records what really happened.
+ */
+export const completeSessionInputSchema = z.object({
+  sessionId: z.string().uuid(),
+  actualMinutes: sessionMinutesSchema.optional(),
+});
+export type CompleteSessionInput = z.infer<typeof completeSessionInputSchema>;
+
+/**
+ * A deliberate pass, which is excluded from the pace numerator. Distinct from
+ * simply letting the day go by: that leaves the session "planned" and counts
+ * as a miss.
+ */
+export const skipSessionInputSchema = z.object({
+  sessionId: z.string().uuid(),
+});
+export type SkipSessionInput = z.infer<typeof skipSessionInputSchema>;
+
+/** Inclusive date range; both ends optional. */
+export const listSessionsInputSchema = z.object({
+  taskId: z.string().uuid().optional(),
+  from: dateKeySchema.optional(),
+  to: dateKeySchema.optional(),
+});
+export type ListSessionsInput = z.infer<typeof listSessionsInputSchema>;

@@ -25,6 +25,7 @@ function toTask(row: typeof schema.tasks.$inferSelect): Task {
     priority: row.priority,
     type: row.type,
     dueAt: row.dueAt,
+    monthlyTargetMinutes: row.monthlyTargetMinutes,
     parentTaskId: row.parentTaskId,
     notionPageId: row.notionPageId,
     createdAt: row.createdAt,
@@ -213,5 +214,51 @@ describe("cancelAutoReminders", () => {
 
     expect(activeAfter?.status).toBe("cancelled");
     expect(firedAfter?.status).toBe("completed");
+  });
+});
+
+describe("routines never get an overdue reminder", () => {
+  beforeEach(resetTestDb);
+
+  it("derives early and due for a routine's deadline, but never overdue", async () => {
+    const userId = await createTestUser();
+    const row = await insertTask(userId, {
+      title: "Đạt aim IELTS",
+      monthlyTargetMinutes: 20 * 60,
+      dueAt: new Date(Date.now() + 60 * 86_400_000),
+    });
+
+    await deriveTaskReminders(getTestDb(), toTask(row));
+
+    const kinds = (
+      await getTestDb()
+        .select()
+        .from(schema.reminders)
+        .where(eq(schema.reminders.taskId, row.id))
+    ).map((reminder) => reminder.kind);
+
+    // Telling the user a routine is overdue would contradict the Now view,
+    // which never puts one in the overdue bucket. The heads-up ones stay:
+    // a deadline a routine happens to carry is still a real date.
+    expect(kinds.sort()).toEqual(["due", "early"]);
+  });
+
+  it("still derives overdue for an ordinary task", async () => {
+    const userId = await createTestUser();
+    const row = await insertTask(userId, {
+      title: "Ship the release",
+      dueAt: new Date(Date.now() + 60 * 86_400_000),
+    });
+
+    await deriveTaskReminders(getTestDb(), toTask(row));
+
+    const kinds = (
+      await getTestDb()
+        .select()
+        .from(schema.reminders)
+        .where(eq(schema.reminders.taskId, row.id))
+    ).map((reminder) => reminder.kind);
+
+    expect(kinds).toContain("overdue");
   });
 });

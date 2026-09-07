@@ -3,6 +3,7 @@ import { schema, type Database } from "@persona/db";
 import type { NotionClient, NotionPage } from "@persona/integrations";
 import type { Task, TaskPriority, TaskStatus, TaskType } from "@persona/core";
 import { deriveTaskReminders } from "./reminder-derivation.js";
+import { toDomainTask } from "./task-mapper.js";
 
 // Self-join alias: parents are `schema.tasks`, their steps are `subtasks`.
 const subtasks = aliasedTable(schema.tasks, "subtasks");
@@ -23,6 +24,14 @@ interface NotionTaskFields {
   priority: TaskPriority;
   type: TaskType;
   dueAt: Date | null;
+  /**
+   * Three-valued on purpose. A number or null is what the "Monthly Target (h)"
+   * property said; `undefined` means the property is not on the database at
+   * all, and the column must then be left exactly as it is. Without that
+   * distinction, a workspace that never added the property would have every
+   * routine quietly demoted to an ordinary task on the next sync pass.
+   */
+  monthlyTargetMinutes: number | null | undefined;
   /** Notion page id of this page's parent task, from the "Parent" relation. */
   parentNotionPageId: string | null;
 }
@@ -53,6 +62,13 @@ function isTaskType(value: string | undefined): value is TaskType {
   return TYPE_VALUES.includes(value as TaskType);
 }
 
+/**
+ * Stated in hours, not minutes: the app stores minutes because sessions are
+ * measured in them, but "20" is what the user actually means by a monthly
+ * target and "1200" is not something anyone wants to type into a table.
+ */
+const MONTHLY_TARGET_PROPERTY = "Monthly Target (h)";
+
 /** Reads task fields out of a raw Notion page's properties. */
 export function notionPageToTaskFields(page: NotionPage): NotionTaskFields {
   const properties = page.properties as Record<string, NotionProperty>;
@@ -63,6 +79,7 @@ export function notionPageToTaskFields(page: NotionPage): NotionTaskFields {
   const typeName = properties.Type?.select?.name;
   const description = properties.Description?.rich_text;
   const due = properties.Due?.date?.start;
+  const targetHours = properties[MONTHLY_TARGET_PROPERTY];
 
   return {
     title: plainText(titleProp?.title) || "(untitled)",
@@ -71,6 +88,11 @@ export function notionPageToTaskFields(page: NotionPage): NotionTaskFields {
     priority: isTaskPriority(priorityName) ? priorityName : "medium",
     type: isTaskType(typeName) ? typeName : "personal",
     dueAt: due ? new Date(due) : null,
+    monthlyTargetMinutes: targetHours
+      ? typeof targetHours.number === "number"
+        ? Math.round(targetHours.number * 60)
+        : null
+      : undefined,
     // A page can relate to several others, but a task has exactly one
     // parent — take the first and ignore the rest.
     parentNotionPageId: properties.Parent?.relation?.[0]?.id ?? null,
@@ -109,6 +131,14 @@ export function taskToNotionProperties(
     Priority: { select: { name: task.priority } },
     Type: { select: { name: task.type } },
     Due: { date: task.dueAt ? { start: task.dueAt.toISOString() } : null },
+    // What makes a routine visible *in Notion*: there is no type or flag to
+    // look for, so this filled-in number is the only way to tell a task
+    // pursued at a rate from one to be finished once — and therefore the only
+    // way to build a "Routines" view, or to know why a task sits at
+    // in_progress forever before flipping it to open and pausing it.
+    [MONTHLY_TARGET_PROPERTY]: {
+      number: task.monthlyTargetMinutes === null ? null : task.monthlyTargetMinutes / 60,
+    },
     Parent: { relation: parentNotionPageId ? [{ id: parentNotionPageId }] : [] },
   };
 }
@@ -353,6 +383,11 @@ async function applyNotionPage(
             priority: fields.priority,
             type: fields.type,
             dueAt: fields.dueAt,
+            // Spread so an absent property leaves the column untouched — see
+            // NotionTaskFields.monthlyTargetMinutes for why that matters.
+            ...(fields.monthlyTargetMinutes !== undefined
+              ? { monthlyTargetMinutes: fields.monthlyTargetMinutes }
+              : {}),
             notionSyncedAt: lastEdited,
             updatedAt: new Date(),
           })
@@ -368,6 +403,7 @@ async function applyNotionPage(
             priority: fields.priority,
             type: fields.type,
             dueAt: fields.dueAt,
+            monthlyTargetMinutes: fields.monthlyTargetMinutes ?? null,
             notionPageId: notionPage.id,
             notionSyncedAt: lastEdited,
           })
@@ -375,20 +411,7 @@ async function applyNotionPage(
 
     if (!row) throw new Error("Failed to upsert task from Notion page");
 
-    const task: Task = {
-      id: row.id,
-      userId: row.userId,
-      title: row.title,
-      description: row.description,
-      status: row.status,
-      priority: row.priority,
-      type: row.type,
-      dueAt: row.dueAt,
-      parentTaskId: row.parentTaskId,
-      notionPageId: row.notionPageId,
-      createdAt: row.createdAt,
-      updatedAt: row.updatedAt,
-    };
+    const task: Task = toDomainTask(row);
 
     await deriveTaskReminders(tx, task);
   });

@@ -86,6 +86,7 @@ describe("taskToNotionProperties", () => {
       priority: "urgent",
       type: "work",
       dueAt: new Date("2026-08-25T09:00:00.000Z"),
+      monthlyTargetMinutes: null,
       parentTaskId: null,
       notionPageId: null,
       createdAt: new Date(),
@@ -101,6 +102,7 @@ describe("taskToNotionProperties", () => {
       priority: task.priority,
       type: task.type,
       dueAt: task.dueAt,
+      monthlyTargetMinutes: task.monthlyTargetMinutes,
       parentNotionPageId: null,
     });
   });
@@ -130,6 +132,7 @@ describe("parent relation mapping", () => {
       priority: "medium",
       type: "work",
       dueAt: null,
+      monthlyTargetMinutes: null,
       parentTaskId: "parent-task-uuid",
       notionPageId: null,
       createdAt: new Date(),
@@ -159,5 +162,99 @@ describe("isBlankNotionPage", () => {
     expect(
       isBlankNotionPage(makePage({ Title: { type: "title", title: [{ plain_text: "Real task" }] } })),
     ).toBe(false);
+  });
+});
+
+describe("Monthly Target (h)", () => {
+  function page(properties: Record<string, unknown>) {
+    return {
+      id: "page-1",
+      url: "",
+      last_edited_time: "2026-09-07T00:00:00.000Z",
+      properties: {
+        Title: { type: "title", title: [{ plain_text: "Học tiếng Anh" }] },
+        ...properties,
+      },
+    };
+  }
+
+  it("reads the target in hours and stores it in minutes", () => {
+    const fields = notionPageToTaskFields(
+      page({ "Monthly Target (h)": { type: "number", number: 20 } }),
+    );
+
+    expect(fields.monthlyTargetMinutes).toBe(20 * 60);
+  });
+
+  it("handles a fractional number of hours", () => {
+    const fields = notionPageToTaskFields(
+      page({ "Monthly Target (h)": { type: "number", number: 20.5 } }),
+    );
+
+    expect(fields.monthlyTargetMinutes).toBe(1230);
+  });
+
+  it("reads an emptied property as null — the user un-routined the task", () => {
+    const fields = notionPageToTaskFields(
+      page({ "Monthly Target (h)": { type: "number", number: null } }),
+    );
+
+    expect(fields.monthlyTargetMinutes).toBeNull();
+  });
+
+  it("reads an ABSENT property as undefined, so the column is left alone", () => {
+    // The distinction that prevents a workspace which never added the property
+    // from quietly demoting every routine on the next sync pass.
+    const fields = notionPageToTaskFields(page({}));
+
+    expect(fields.monthlyTargetMinutes).toBeUndefined();
+  });
+
+  it("writes the target back out in hours", () => {
+    const props = taskToNotionProperties(
+      {
+        id: "t1",
+        userId: "u1",
+        title: "Học tiếng Anh",
+        description: null,
+        status: "in_progress",
+        priority: "medium",
+        type: "personal",
+        dueAt: null,
+        monthlyTargetMinutes: 20 * 60,
+        parentTaskId: null,
+        notionPageId: null,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      },
+      null,
+    );
+
+    expect(props["Monthly Target (h)"]).toEqual({ number: 20 });
+  });
+
+  it("clears the property for an ordinary task rather than omitting it", () => {
+    const props = taskToNotionProperties(
+      {
+        id: "t1",
+        userId: "u1",
+        title: "Ship the release",
+        description: null,
+        status: "open",
+        priority: "high",
+        type: "work",
+        dueAt: null,
+        monthlyTargetMinutes: null,
+        parentTaskId: null,
+        notionPageId: null,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      },
+      null,
+    );
+
+    // Written as null, so a task that stops being a routine actually empties
+    // in Notion instead of keeping a stale number.
+    expect(props["Monthly Target (h)"]).toEqual({ number: null });
   });
 });

@@ -5,6 +5,7 @@ import type OpenAI from "openai";
 import { schema } from "@persona/db";
 import type { NowTasks, TaskWithProgress } from "@persona/core";
 import { getTestDb, resetTestDb } from "../test-support/db.js";
+import { computePace } from "./pace.js";
 import { DrizzleTaskService } from "./task-service.js";
 import {
   hasBriefingContent,
@@ -43,12 +44,14 @@ function task(overrides: Partial<TaskWithProgress> = {}): TaskWithProgress {
     priority: "medium",
     type: "work",
     dueAt: new Date("2026-08-20T05:00:00.000Z"),
+    monthlyTargetMinutes: null,
     parentTaskId: null,
     notionPageId: null,
     createdAt: new Date(),
     updatedAt: new Date(),
     progress: null,
     nextStep: null,
+    pace: null,
     ...overrides,
   };
 }
@@ -58,6 +61,7 @@ function nowTasks(overrides: Partial<NowTasks> = {}): NowTasks {
     overdue: [],
     today: [],
     nextUp: null,
+    ongoing: [],
     future: [],
     unscheduledCount: 0,
     unscheduled: [],
@@ -345,5 +349,57 @@ describe("sendDailyBriefings", () => {
     expect(result.sent).toBe(0);
     const [after] = await db.select().from(schema.users).where(eq(schema.users.id, row.id));
     expect(after?.lastBriefingOn).toBeNull();
+  });
+});
+
+describe("briefing with routines", () => {
+  function routine(title: string, spentMinutes: number, dayOfMonth = 15): TaskWithProgress {
+    return task({
+      id: `r-${title}`,
+      title,
+      status: "in_progress",
+      dueAt: null,
+      monthlyTargetMinutes: 20 * 60,
+      pace: computePace({ targetMinutes: 20 * 60, spentMinutes, dayOfMonth, daysInMonth: 30 }),
+    });
+  }
+
+  it("interrupts for a routine slipping behind, which nothing else would ever raise", () => {
+    // A routine has no deadline, so it can never go overdue — being behind its
+    // month is the only signal there is.
+    const behind = routine("Học tiếng Anh", 60);
+
+    expect(behind.pace?.status).toBe("behind");
+    expect(hasBriefingContent(nowTasks({ ongoing: [behind] }))).toBe(true);
+  });
+
+  it("stays quiet when every routine is on track", () => {
+    const onTrack = routine("Học tiếng Anh", 600);
+
+    expect(onTrack.pace?.status).toBe("on_track");
+    expect(hasBriefingContent(nowTasks({ ongoing: [onTrack] }))).toBe(false);
+  });
+
+  it("stays quiet when a routine is ahead", () => {
+    expect(hasBriefingContent(nowTasks({ ongoing: [routine("Gym", 20 * 60)] }))).toBe(false);
+  });
+
+  it("renders each routine with a suggestion, plus the day's total", () => {
+    const rendered = renderBriefing(
+      nowTasks({ ongoing: [routine("Học tiếng Anh", 60), routine("Gym", 120)] }),
+    );
+
+    expect(rendered).toContain("Routine (2)");
+    expect(rendered).toContain("Học tiếng Anh");
+    expect(rendered).toContain("behind by");
+    expect(rendered).toContain("suggest ~");
+    // The total is what makes the proposal answerable in one reply.
+    expect(rendered).toMatch(/Tổng đề xuất hôm nay: \d+h/);
+  });
+
+  it("leaves routines out entirely when there are none", () => {
+    const rendered = renderBriefing(nowTasks({ today: [task({ title: "Ship it" })] }));
+
+    expect(rendered).not.toContain("Routine");
   });
 });
