@@ -10,6 +10,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
     "seed": "tsx src/scripts/seed.ts",
+    "notion:check": "tsx src/scripts/notion-check.ts",
     "telegram:onboard": "tsx src/scripts/telegram-onboarding.ts"
   },
   "dependencies": {

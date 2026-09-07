@@ -12,13 +12,16 @@ original "delivery-only" scope).
   OAuth), chat + tasks UI, BFF routes that call the worker with a shared
   secret.
 - `apps/worker` — Fastify API: `/chat`, `/tasks`, `/tasks/:taskId`,
-  `/internal/tick`, `/telegram/webhook`, `/approvals/:id/decision`,
-  `/auth/verify-password`, `/health`, `/users/me`. Owns the LLM adapter,
-  task/reminder services, and the outbox/scheduler tick logic.
+  `/sessions`, `/sessions/today`, `/sessions/:id/complete`,
+  `/sessions/:id/skip`, `/internal/tick`, `/telegram/webhook`,
+  `/approvals/:id/decision`, `/auth/verify-password`, `/health`, `/users/me`,
+  plus the token-gated `/desktop/*` mirror (`/desktop/today`,
+  `/desktop/sessions`, ...). Owns the LLM adapter, task/reminder/session
+  services, and the outbox/scheduler tick logic.
 - `apps/scheduler-lambda` — Lambda invoked every minute by a live EventBridge
   Scheduler; HMAC-signs an empty body and calls `/internal/tick`.
 - `packages/core` — domain types, Zod schemas, `TaskService`/`ReminderService`/
-  `AgentRuntime` interfaces.
+  `SessionService`/`AgentRuntime` interfaces.
 - `packages/db` — Drizzle schema + migrations, via `pg` (works against
   Supabase, Neon, Render Postgres, or any standard Postgres host).
 - `packages/integrations` — Telegram Bot API client + onboarding helper.
@@ -30,6 +33,7 @@ pnpm install
 cp .env.example .env   # fill in DATABASE_URL, secrets, AUTH_PASSWORD_HASH, Telegram/LLM keys
 pnpm --filter @persona/db generate   # already run once; re-run after schema changes
 pnpm --filter @persona/db migrate    # applies packages/db/drizzle/*.sql to DATABASE_URL
+                                     # (reads the root .env; an inline DATABASE_URL=... still wins)
 pnpm --filter @persona/worker seed   # inserts the allowlisted user row
 pnpm --filter @persona/worker exec tsx src/scripts/telegram-onboarding.ts duy.dm@teko.vn  # links Telegram chat_id
 
@@ -180,6 +184,96 @@ curl -X POST "https://api.telegram.org/bot<TELEGRAM_BOT_TOKEN>/setWebhook" \
   it executes, so a single `breakdownTask` tool would ask the user to approve
   without any steps to look at — and re-generating them at approval time could
   create steps they never agreed to.
+- **Routines as a rate, not a recurrence rule.** A task carrying a
+  `monthlyTargetMinutes` ("20 hours of English a month") is a *routine*: one
+  pursued at a rate rather than finished once. There is deliberately no
+  recurrence-rule table, no horizon of pre-generated occurrences, and no new
+  task type or flag — the target's presence is what makes a task a routine, the
+  same way `progress: null` distinguishes "not broken down" from "0% done". It
+  is two-way synced as a `Monthly Target (h)` number on the Notion side —
+  stated in hours, since nobody wants to type 1200 into a table — and since
+  there is no type or flag to look for, that filled-in number is also the only
+  way to recognise a routine *in Notion*, and therefore to know why a task sits
+  at `in_progress` forever before flipping it to `open` and pausing it. An
+  **absent** property reads as "leave the column alone", distinct from an
+  emptied one; without that distinction a workspace that never added the
+  property would demote every routine on the next sync pass. A
+  routine's status stays free rather than pinned: `in_progress` is its normal
+  state, and flipping it to `open` is the whole pause mechanism (it then
+  appears in no bucket and accrues no pace). Because it has no `dueAt`, the Now
+  view gives it a bucket of its own, `ongoing` — without that it would sit in
+  "not scheduled yet" forever, which is precisely backwards for the tasks worked
+  on most consistently. A routine is held out of the dueAt buckets entirely
+  even when it *does* have a deadline, so it stays one line — and it **never
+  goes overdue**, however long that deadline has passed, because there is
+  nothing for a date to be late against when a thing is pursued at a rate. The
+  only thing that ends a routine is cancelling it. `deriveTaskReminders`
+  follows the same rule: a routine's deadline still earns the early/due
+  heads-up reminders (the exam really is on that date) but never the `overdue`
+  one, since a Telegram message saying a routine is overdue would contradict
+  the screen.
+- **Day planning, by choosing rather than by generating.** A `work_sessions`
+  row is one day's committed work on a task — "today I'll spend an hour on
+  English" — created from the desktop widget or in chat, never generated. One
+  session per task per day, so planning the same pair again revises it; a day
+  previously skipped comes back to life, but a session already finished stays
+  finished. Completing one with no minutes given credits the minutes committed
+  to (ticking off shouldn't require typing a number); passing them records what
+  really happened. Sessions are **never deleted** — a missed day is the
+  denominator of the whole measurement, and deleting misses makes adherence read
+  100% forever. Kept out of `tasks` on purpose: subtasks are *steps* (units of
+  the thing produced) and progress counts them, while sessions are units of
+  *time spent*, so folding them together would make `done/total` add chapters to
+  weekdays — and both rules steps obey ("no due date of its own", "never its own
+  entry in the Now view") stay true as written instead of growing an "unless it
+  is a session" branch.
+- **Pace, over the calendar month, against the pro-rata share.**
+  `services/pace.ts` is pure, for the same reason reminder-derivation's offset
+  arithmetic is: it is the part most likely to be subtly wrong. It compares what
+  has been spent to the share due *by the end of today*, not to the month's
+  total — comparing to the total makes the figure useless at both ends of the
+  month (0 of 20 hours on the 2nd looks like a disaster; 10 hours short on the
+  28th becomes a demand for 3.3 hours a day), whereas the pro-rata share keeps
+  the 2nd quiet and reports "10 hours behind" on the 28th. One day's share is
+  the tolerance in both directions, since landing exactly on the share never
+  happens and the status would otherwise flip daily. Only `done` sessions
+  count: a still-`planned` one is an intention, and counting it would hide the
+  exact failure pace exists to catch. `skipped` leaves both sides of the ratio,
+  matching how cancelled steps already behave.
+- **Sessions reach Notion one way only.** With `NOTION_SESSIONS_DATABASE_ID`
+  set, every session write is mirrored to a database of its own, with a relation
+  back to Tasks and a `Date` that carries start+end when the session was given a
+  time (so it renders as a calendar block rather than an all-day item). Only
+  app → Notion: sessions are created in the same breath as deciding to do them,
+  so there is nothing to read back — which skips a sync cursor, the
+  revive-versus-delete question when a page disappears, and any risk of an edit
+  loop. Pace is deliberately *not* written to Notion: it changes daily and every
+  write bumps `last_edited_time`, which is the loop the tasks database needs its
+  `notion_progress_pushed` guard for. Pace is read in the widget, in chat and in
+  the briefing instead.
+- **A session's reminder is an ordinary manual reminder.** A session given a
+  start time earns exactly one, on its parent task, with `source: "manual"` and
+  a null `kind`. Nothing in `reminders`/`trigger_runs`/`outbox` had to change:
+  `deriveTaskReminders` only ever deletes `source = "auto"` rows so a task edit
+  cannot sweep one away, and the one-active-per-`(task, kind)` unique index only
+  applies where `kind` is set, so several timed sessions on one task never
+  collide. The link is tracked from `work_sessions.reminder_id` rather than as a
+  column on `reminders`, keeping the most reliability-critical table in the app
+  untouched. Re-planning cancels and re-inserts rather than moving a row, since
+  a fired reminder is left in place as the audit trail; completing or skipping a
+  session cancels its reminder, because finishing at 18:00 something planned for
+  19:00 should not still ring. A session with no start time gets none — the
+  morning briefing already covers it, and a reminder at an arbitrary hour is
+  noise.
+- **The briefing proposes a plan instead of only reporting one.** Routine pace
+  is injected into the agent's system prompt every turn (so "am I on track" and
+  "what should I do today" are answerable without a tool round-trip first) and
+  rendered into the morning briefing, both through the same `describePace` so
+  the two never describe one state differently. A routine slipping *behind* is
+  now itself a reason to send: it is the only signal a routine can produce,
+  having no deadline to go overdue against. Being on track or ahead is not —
+  a daily "all fine" is how a channel gets ignored, the same reasoning that
+  keeps a quiet day quiet.
 - **Web search.** When `TAVILY_API_KEY` is set, the agent gains a `web_search`
   tool (`auto` policy) for current-events/internet lookups beyond training
   data. The system prompt also injects the current UTC date/time every turn
