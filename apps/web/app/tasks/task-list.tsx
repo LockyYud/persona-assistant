@@ -11,6 +11,17 @@ interface TaskRow {
   dueAt: string | null;
   progress: { done: number; total: number } | null;
   nextStep: { id: string; title: string } | null;
+  pace: Pace | null;
+}
+
+interface Pace {
+  targetMinutes: number;
+  spentMinutes: number;
+  deltaMinutes: number;
+  status: "ahead" | "on_track" | "behind";
+  dayOfMonth: number;
+  daysInMonth: number;
+  suggestedTodayMinutes: number;
 }
 
 interface NowTasks {
@@ -19,6 +30,7 @@ interface NowTasks {
   nextUp: TaskRow | null;
   unscheduledCount: number;
   unscheduled: TaskRow[];
+  ongoing: TaskRow[];
 }
 
 function removeTask(now: NowTasks, taskId: string): NowTasks {
@@ -28,6 +40,28 @@ function removeTask(now: NowTasks, taskId: string): NowTasks {
     today: now.today.filter((task) => task.id !== taskId),
     nextUp: now.nextUp?.id === taskId ? null : now.nextUp,
   };
+}
+
+/**
+ * Kept local rather than imported from the worker's pace module: this app has
+ * no @persona/* dependency, and adding one would put building that package
+ * ahead of `next build` in a deploy pipeline configured outside the repo.
+ * Mirrors formatMinutes in apps/worker/src/services/pace.ts.
+ */
+function formatMinutes(minutes: number): string {
+  const total = Math.max(0, Math.round(minutes));
+  const hours = Math.floor(total / 60);
+  const rest = total % 60;
+  if (hours === 0) return `${rest}m`;
+  if (rest === 0) return `${hours}h`;
+  return `${hours}h${rest}m`;
+}
+
+function describeStanding(pace: Pace): string {
+  const gap = formatMinutes(Math.abs(pace.deltaMinutes));
+  if (pace.status === "behind") return `chậm ${gap}`;
+  if (pace.status === "ahead") return `vượt ${gap}`;
+  return "đúng nhịp";
 }
 
 function formatDuration(minutes: number): string {
@@ -70,7 +104,11 @@ export function TaskList({ initialNow }: { initialNow: NowTasks }) {
     }
   }
 
-  const hasAny = now.overdue.length > 0 || now.today.length > 0 || now.nextUp;
+  // A behind routine is exactly the state the old check missed: it has no
+  // dueAt, so it lands in none of the dated buckets and the view claimed
+  // "all clear" while the month was slipping.
+  const hasAny =
+    now.overdue.length > 0 || now.today.length > 0 || now.nextUp || now.ongoing.length > 0;
 
   return (
     <div className="now-view">
@@ -89,6 +127,7 @@ export function TaskList({ initialNow }: { initialNow: NowTasks }) {
         onComplete={handleComplete}
         pendingIds={pendingIds}
       />
+      <RoutineGroup tasks={now.ongoing} />
       {now.nextUp && (
         <TaskGroup
           title="Next up"
@@ -111,6 +150,47 @@ export function TaskList({ initialNow }: { initialNow: NowTasks }) {
         </p>
       )}
     </div>
+  );
+}
+
+/**
+ * Routines get their own group and no Complete button. The button on an
+ * ordinary card finishes the task; on a routine it would end the routine
+ * itself, which is not what anyone reaching for a row that says "behind
+ * 5h" intends. Minutes are logged from the widget, so this view reports.
+ */
+function RoutineGroup({ tasks }: { tasks: TaskRow[] }) {
+  if (tasks.length === 0) return null;
+
+  return (
+    <section className="task-group task-group-routine">
+      <h2>Routine</h2>
+      <ul className="task-list">
+        {tasks.map((task) => (
+          <li key={task.id} className="task-card">
+            <div className="task-title">{task.title}</div>
+            {/* A routine is held out of the dated buckets, so if it also
+                carries a deadline this card is the only place on the page
+                that can show it. */}
+            {task.dueAt && <div className="task-meta">{formatRelative(task.dueAt)}</div>}
+            {task.pace && (
+              <>
+                <div className={`task-meta pace-${task.pace.status}`}>
+                  {formatMinutes(task.pace.spentMinutes)} / {formatMinutes(task.pace.targetMinutes)}{" "}
+                  tháng này · {describeStanding(task.pace)} · ngày {task.pace.dayOfMonth}/
+                  {task.pace.daysInMonth}
+                </div>
+                {task.pace.suggestedTodayMinutes > 0 && (
+                  <div className="task-next-step">
+                    Đề xuất hôm nay: ~{formatMinutes(task.pace.suggestedTodayMinutes)}
+                  </div>
+                )}
+              </>
+            )}
+          </li>
+        ))}
+      </ul>
+    </section>
   );
 }
 

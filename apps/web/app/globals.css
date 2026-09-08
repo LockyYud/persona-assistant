@@ -386,6 +386,17 @@ button {
   color: var(--danger);
 }
 
+.task-group-routine h2 {
+  color: var(--primary);
+}
+
+/* Only "behind" gets a colour. Marking on-track and ahead too would leave the
+   group permanently lit and the one state worth acting on no longer standing
+   out — which is the bug this section was added to fix. */
+.pace-behind {
+  color: var(--danger);
+}
+
 .task-card-row {
   display: flex;
   align-items: center;

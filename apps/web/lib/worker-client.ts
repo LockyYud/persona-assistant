@@ -98,6 +98,12 @@ export async function listNowTasks(userId: string) {
       nextUp: TaskRow | null;
       unscheduledCount: number;
       unscheduled: TaskRow[];
+      /**
+       * Routines in progress, each with `pace` set. They carry no dueAt, so
+       * they appear in none of the buckets above — a caller that reads only
+       * those reports "all clear" while a routine is behind.
+       */
+      ongoing: TaskRow[];
     };
   }>;
 }
@@ -120,6 +126,19 @@ export interface TaskRow {
   progress: { done: number; total: number } | null;
   /** Earliest unfinished step, when the task has been broken down. */
   nextStep: { id: string; title: string } | null;
+  /** How the month is going, for a routine task; null for an ordinary one. */
+  pace: PaceRow | null;
+}
+
+export interface PaceRow {
+  targetMinutes: number;
+  spentMinutes: number;
+  expectedMinutes: number;
+  deltaMinutes: number;
+  status: "ahead" | "on_track" | "behind";
+  dayOfMonth: number;
+  daysInMonth: number;
+  suggestedTodayMinutes: number;
 }
 
 export interface DesktopTokenRow {
