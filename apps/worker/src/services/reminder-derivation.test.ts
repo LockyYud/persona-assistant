@@ -45,6 +45,64 @@ async function activeAutoReminders(taskId: string) {
 describe("deriveTaskReminders", () => {
   beforeEach(resetTestDb);
 
+  it("keeps a reminder that came due but has not been dispatched yet", async () => {
+    const userId = await createTestUser();
+    // 10 minutes out, so the early offset (30m before due) already sits in the
+    // past — exactly where it lands once a reminder has been created and the
+    // clock has moved on past it.
+    const dueAt = new Date(Date.now() + 10 * 60 * 1000);
+    const row = await insertTask(userId, { dueAt, priority: "medium" });
+
+    // The state between a reminder falling due and the tick claiming it: still
+    // active, its moment just passed. runTick syncs Notion — which re-derives
+    // for every page it touches — before it claims reminders, so a
+    // re-derivation lands in that gap.
+    const [pending] = await getTestDb()
+      .insert(schema.reminders)
+      .values({
+        taskId: row.id,
+        userId,
+        message: "Sắp đến hạn",
+        nextRunAt: new Date(Date.now() - 5 * 60 * 1000),
+        source: "auto",
+        kind: "early",
+      })
+      .returning();
+
+    await deriveTaskReminders(getTestDb(), toTask(row));
+
+    // Recomputing the offsets cannot bring this one back: its time is behind
+    // `now`, so the future-only filter drops it. Deleting it therefore loses
+    // the notification outright rather than rescheduling it.
+    const survivors = await activeAutoReminders(row.id);
+    expect(survivors.map((r) => r.id)).toContain(pending!.id);
+  });
+
+  it("survives a dueAt pushed later while an owed reminder is still around", async () => {
+    const userId = await createTestUser();
+    const row = await insertTask(userId, {
+      dueAt: new Date(Date.now() + 10 * 60 * 1000),
+      priority: "medium",
+    });
+    await getTestDb()
+      .insert(schema.reminders)
+      .values({
+        taskId: row.id,
+        userId,
+        message: "Sắp đến hạn",
+        nextRunAt: new Date(Date.now() - 5 * 60 * 1000),
+        source: "auto",
+        kind: "early",
+      });
+
+    // Moving the deadline out makes the recomputed "early" future again, so a
+    // fresh row is inserted while the owed one is still active — and the
+    // unique index is scoped to exactly (task, kind, active).
+    const moved = { ...toTask(row), dueAt: new Date(Date.now() + 3 * 60 * 60 * 1000) };
+
+    await expect(deriveTaskReminders(getTestDb(), moved)).resolves.toBeUndefined();
+  });
+
   it("derives early/due/overdue for a normal-priority task with a future dueAt", async () => {
     const userId = await createTestUser();
     const dueAt = new Date(Date.now() + 5 * 60 * 60 * 1000); // 5h out — clears all offsets
@@ -217,10 +275,10 @@ describe("cancelAutoReminders", () => {
   });
 });
 
-describe("routines never get an overdue reminder", () => {
+describe("routines get no deadline reminders at all", () => {
   beforeEach(resetTestDb);
 
-  it("derives early and due for a routine's deadline, but never overdue", async () => {
+  it("derives nothing for a routine, even one carrying a dueAt", async () => {
     const userId = await createTestUser();
     const row = await insertTask(userId, {
       title: "Đạt aim IELTS",
@@ -237,10 +295,10 @@ describe("routines never get an overdue reminder", () => {
         .where(eq(schema.reminders.taskId, row.id))
     ).map((reminder) => reminder.kind);
 
-    // Telling the user a routine is overdue would contradict the Now view,
-    // which never puts one in the overdue bucket. The heads-up ones stay:
-    // a deadline a routine happens to carry is still a real date.
-    expect(kinds.sort()).toEqual(["due", "early"]);
+    // A routine sits in no dated bucket, so a deadline on one is invisible
+    // everywhere the user looks. Reminding them about it over Telegram would
+    // be the single place it ever appeared, contradicting every screen.
+    expect(kinds).toEqual([]);
   });
 
   it("still derives overdue for an ordinary task", async () => {

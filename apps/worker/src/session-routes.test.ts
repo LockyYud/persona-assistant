@@ -1,5 +1,7 @@
 import "./test-support/env.js";
+import { and, eq } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
+import { schema } from "@persona/db";
 import { buildApp } from "./app.js";
 import { createTestUser, getTestDb, resetTestDb } from "./test-support/db.js";
 import { mintDesktopToken } from "./auth/desktop-token.js";
@@ -22,6 +24,14 @@ async function createRoutine(app: ReturnType<typeof buildApp>, userId: string, t
     payload: { userId, status: "in_progress" },
   });
   return task;
+}
+
+async function autoReminderKinds(taskId: string): Promise<string[]> {
+  const rows = await getTestDb()
+    .select()
+    .from(schema.reminders)
+    .where(and(eq(schema.reminders.taskId, taskId), eq(schema.reminders.status, "active")));
+  return rows.filter((r) => r.source === "auto").map((r) => r.kind as string);
 }
 
 describe("session routes", () => {
@@ -169,6 +179,38 @@ describe("session routes", () => {
 
     const today = await app.inject({ method: "GET", url: "/desktop/today", headers: auth });
     expect(today.json().ongoing.map((t: { id: string }) => t.id)).toEqual([task.id]);
+  });
+
+  it("drops the deadline, and its reminders, when a dated task becomes a routine", async () => {
+    const app = buildApp({ db: getTestDb() });
+    const userId = await createTestUser();
+    const { raw } = await mintDesktopToken(getTestDb(), userId, "test");
+    const created = await app.inject({
+      method: "POST",
+      url: "/tasks",
+      headers: BFF,
+      payload: {
+        userId,
+        title: "Học tiếng Anh",
+        dueAt: new Date(Date.now() + 5 * 60 * 60 * 1000).toISOString(),
+      },
+    });
+    const task = created.json().task;
+    // The dated task really did earn reminders, so the assertion below is
+    // about them being cleared rather than never having existed.
+    expect(await autoReminderKinds(task.id)).not.toEqual([]);
+
+    const response = await app.inject({
+      method: "POST",
+      url: `/desktop/tasks/${task.id}/routine`,
+      headers: { authorization: `Bearer ${raw}`, "content-type": "application/json" },
+      payload: { monthlyTargetMinutes: 20 * 60 },
+    });
+
+    expect(response.json().task.dueAt).toBeNull();
+    // Left in place, "Đến hạn: Học tiếng Anh" would arrive over Telegram for a
+    // task the Now view deliberately shows no deadline for.
+    expect(await autoReminderKinds(task.id)).toEqual([]);
   });
 
   it("leaves an already-started task's status alone", async () => {

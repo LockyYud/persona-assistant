@@ -563,10 +563,21 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       const existing = await taskService.getTask(userId, parsed.data.taskId);
       if (!existing) return reply.code(404).send({ error: "task not found" });
 
+      const becomingRoutine = parsed.data.monthlyTargetMinutes !== null;
       const task = await taskService.updateTask(userId, {
         taskId: parsed.data.taskId,
         monthlyTargetMinutes: parsed.data.monthlyTargetMinutes,
-        ...(parsed.data.monthlyTargetMinutes !== null && existing.status === "open"
+        // A routine answers "did I put time in today", not "is it done by
+        // Friday" — so a deadline the task carried before it became one is
+        // dropped rather than left to haunt it. Left in place it would show on
+        // no screen (routines sit in no dated bucket) while still firing
+        // "Đến hạn" over Telegram. Clearing it here pushes through to the
+        // Notion page too, so neither side keeps a date the other has lost.
+        ...(becomingRoutine ? { dueAt: null } : {}),
+        // Starting it is load-bearing, not a convenience: `ongoing` only holds
+        // routines that are in_progress, so one left open would be measured
+        // and shown nowhere.
+        ...(becomingRoutine && existing.status === "open"
           ? { status: "in_progress" as const }
           : {}),
       });

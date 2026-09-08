@@ -1,4 +1,4 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, gt } from "drizzle-orm";
 import { schema, type Database } from "@persona/db";
 import type { ReminderKind, Task } from "@persona/core";
 
@@ -26,20 +26,19 @@ function reminderMessage(kind: ReminderKind, task: Task): string {
 }
 
 function candidateOffsets(task: Task): Array<{ kind: ReminderKind; minutesBeforeDue: number }> {
+  // A routine is pursued at a rate, not finished by a date. The Now view keeps
+  // one out of every dated bucket, so a deadline it happens to carry shows on
+  // no screen at all — which leaves a Telegram message the only place it can
+  // surface, contradicting everything the user can see. Its daily session
+  // reminders are unaffected: those are `manual` reminders with a null kind,
+  // which this function never produces and deriveTaskReminders never deletes.
+  if (task.monthlyTargetMinutes !== null) return [];
+
   const offsets: Array<{ kind: ReminderKind; minutesBeforeDue: number }> = [
     { kind: "early", minutesBeforeDue: EARLY_MINUTES },
     { kind: "due", minutesBeforeDue: 0 },
+    { kind: "overdue", minutesBeforeDue: -OVERDUE_MINUTES },
   ];
-
-  // A routine — a task pursued at a rate rather than finished once — never
-  // goes overdue. It is left out of the Now view's overdue bucket for that
-  // reason, and telling the user over Telegram that one is overdue would
-  // contradict the screen. A deadline it happens to carry still earns the
-  // heads-up ones: the exam really is on that date. Only the user cancelling
-  // the task ends a routine.
-  if (task.monthlyTargetMinutes === null) {
-    offsets.push({ kind: "overdue", minutesBeforeDue: -OVERDUE_MINUTES });
-  }
 
   if (task.priority === "urgent") {
     offsets.unshift({ kind: "urgent_early", minutesBeforeDue: URGENT_EARLY_MINUTES });
@@ -66,6 +65,13 @@ function candidateOffsets(task: Task): Array<{ kind: ReminderKind; minutesBefore
  * coexist with the old "completed" row.
  */
 export async function deriveTaskReminders(db: DbOrTx, task: Task): Promise<void> {
+  // Only reminders still ahead of us are rebuilt. One that has already come
+  // due but has not been dispatched yet is owed, and deleting it loses the
+  // notification outright rather than rescheduling it: the offsets are
+  // recomputed from dueAt, so a moment now behind `now` fails the future-only
+  // filter below and never comes back. The gap is not hypothetical — runTick
+  // syncs Notion, which re-derives every page it touches, before it claims
+  // due reminders, and it does that every minute.
   await db
     .delete(schema.reminders)
     .where(
@@ -73,6 +79,7 @@ export async function deriveTaskReminders(db: DbOrTx, task: Task): Promise<void>
         eq(schema.reminders.taskId, task.id),
         eq(schema.reminders.source, "auto"),
         eq(schema.reminders.status, "active"),
+        gt(schema.reminders.nextRunAt, new Date()),
       ),
     );
 
@@ -98,7 +105,12 @@ export async function deriveTaskReminders(db: DbOrTx, task: Task): Promise<void>
     }));
 
   if (rows.length > 0) {
-    await db.insert(schema.reminders).values(rows);
+    // An owed reminder kept above can collide with a rebuilt one of the same
+    // kind when dueAt moves later. Skipping the insert keeps the row that is
+    // about to fire rather than throwing inside the caller's transaction —
+    // the sync applies a whole Notion page in one, and a unique violation
+    // here would take that page's update down with it.
+    await db.insert(schema.reminders).values(rows).onConflictDoNothing();
   }
 }
 
