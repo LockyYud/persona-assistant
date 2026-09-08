@@ -49,7 +49,7 @@ describe("notionPageToTaskFields", () => {
       priority: "high",
       type: "chore",
       dueAt: new Date("2026-08-20T10:00:00.000Z"),
-      parentNotionPageId: null,
+      parentNotionPageId: undefined,
     });
   });
 
@@ -70,7 +70,7 @@ describe("notionPageToTaskFields", () => {
       priority: "medium",
       type: "personal",
       dueAt: null,
-      parentNotionPageId: null,
+      parentNotionPageId: undefined,
     });
   });
 });
@@ -146,6 +146,27 @@ describe("parent relation mapping", () => {
     });
     // An empty relation clears the link rather than leaving a stale one.
     expect(taskToNotionProperties(task, null)["Parent item"]).toEqual({ relation: [] });
+  });
+
+  it("reads an empty relation as null, meaning the step left the tree", () => {
+    const fields = notionPageToTaskFields(
+      makePage({
+        Name: { type: "title", title: [{ plain_text: "A step" }] },
+        "Parent item": { relation: [] },
+      }),
+    );
+
+    expect(fields.parentNotionPageId).toBeNull();
+  });
+
+  it("reads a missing property as undefined, leaving the local link alone", () => {
+    const fields = notionPageToTaskFields(
+      makePage({ Name: { type: "title", title: [{ plain_text: "A step" }] } }),
+    );
+
+    // Null would unlink every step in a workspace that never turned Sub-items
+    // on; undefined is the only value that says "Notion has no opinion".
+    expect(fields.parentNotionPageId).toBeUndefined();
   });
 });
 

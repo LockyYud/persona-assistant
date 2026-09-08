@@ -32,8 +32,15 @@ interface NotionTaskFields {
    * routine quietly demoted to an ordinary task on the next sync pass.
    */
   monthlyTargetMinutes: number | null | undefined;
-  /** Notion page id of this page's parent task, from the sub-item relation. */
-  parentNotionPageId: string | null;
+  /**
+   * Three-valued for the same reason as monthlyTargetMinutes, but the stakes
+   * are reversed: a page id is the parent, `null` is an empty sub-item
+   * relation and means the step was pulled out of the tree, and `undefined`
+   * means the property is missing from the database entirely — a workspace
+   * that never turned Sub-items on, whose every breakdown would otherwise be
+   * flattened on the next pass.
+   */
+  parentNotionPageId: string | null | undefined;
 }
 
 interface NotionProperty {
@@ -88,6 +95,7 @@ export function notionPageToTaskFields(page: NotionPage): NotionTaskFields {
   const description = properties.Description?.rich_text;
   const due = properties.Due?.date?.start;
   const targetHours = properties[MONTHLY_TARGET_PROPERTY];
+  const parentRelation = properties[PARENT_PROPERTY];
 
   return {
     title: plainText(titleProp?.title) || "(untitled)",
@@ -103,7 +111,7 @@ export function notionPageToTaskFields(page: NotionPage): NotionTaskFields {
       : undefined,
     // A page can relate to several others, but a task has exactly one
     // parent — take the first and ignore the rest.
-    parentNotionPageId: properties[PARENT_PROPERTY]?.relation?.[0]?.id ?? null,
+    parentNotionPageId: parentRelation ? (parentRelation.relation?.[0]?.id ?? null) : undefined,
   };
 }
 
@@ -282,7 +290,7 @@ export async function syncNotionTasksForUser(
   if (!user) return { synced: 0 };
 
   const cursor = user.notionSyncCursor;
-  const pendingParentLinks = new Map<string, string>();
+  const pendingParentLinks = new Map<string, string | null>();
   let synced = 0;
   let newestSeen: Date | null = null;
   let startCursor: string | undefined;
@@ -317,9 +325,11 @@ export async function syncNotionTasksForUser(
       // Parent links are resolved after the whole batch: a step's page can be
       // applied before the parent page it points at exists in Postgres, so
       // the relation can only be turned into a parentTaskId once every page
-      // in this pass has a row.
+      // in this pass has a row. `null` is carried through as its own case —
+      // it means the relation is present but empty, which has to unlink the
+      // step rather than be ignored like a missing property.
       const parentPageId = notionPageToTaskFields(notionPage).parentNotionPageId;
-      if (parentPageId) pendingParentLinks.set(notionPage.id, parentPageId);
+      if (parentPageId !== undefined) pendingParentLinks.set(notionPage.id, parentPageId);
       synced += 1;
     }
 
@@ -340,19 +350,29 @@ export async function syncNotionTasksForUser(
 }
 
 /**
- * Turns "child page -> parent page" links into parentTaskId values, once both
- * sides are guaranteed to have rows. A link whose parent page isn't in the
- * database (deleted, or not shared with the integration) is skipped rather
- * than clearing an existing parent.
+ * Applies "child page -> parent page" links once both sides are guaranteed to
+ * have rows. A link whose parent page isn't in the database (deleted, or not
+ * shared with the integration) is skipped rather than clearing an existing
+ * parent.
+ *
+ * A `null` value means Notion showed an empty sub-item relation, so the step
+ * was dragged out of the tree and the local link has to go too. That clear is
+ * deliberately conditional on the current parent already having a Notion page:
+ * pushTaskToNotion writes the relation empty when a step's parent has not been
+ * mirrored yet, and an unconditional clear would read that placeholder as a
+ * removal and dismantle breakdowns the app had just created.
  */
 async function resolveParentLinks(
   db: Database,
   userId: string,
-  links: Map<string, string>,
+  links: Map<string, string | null>,
 ): Promise<void> {
   if (links.size === 0) return;
 
-  const pageIds = [...new Set([...links.keys(), ...links.values()])];
+  const parents = aliasedTable(schema.tasks, "parents");
+  const pageIds = [
+    ...new Set([...links.keys(), ...[...links.values()].filter((id) => id !== null)]),
+  ];
   const rows = await db
     .select({ id: schema.tasks.id, notionPageId: schema.tasks.notionPageId })
     .from(schema.tasks)
@@ -362,9 +382,27 @@ async function resolveParentLinks(
 
   for (const [childPageId, parentPageId] of links) {
     const childId = taskIdByPage.get(childPageId);
+    if (!childId) continue;
+
+    if (parentPageId === null) {
+      await db
+        .update(schema.tasks)
+        .set({ parentTaskId: null, updatedAt: new Date() })
+        .where(
+          and(
+            eq(schema.tasks.id, childId),
+            inArray(
+              schema.tasks.parentTaskId,
+              db.select({ id: parents.id }).from(parents).where(isNotNull(parents.notionPageId)),
+            ),
+          ),
+        );
+      continue;
+    }
+
     const parentId = taskIdByPage.get(parentPageId);
     // Guard against a page related to itself, which would create a cycle.
-    if (!childId || !parentId || childId === parentId) continue;
+    if (!parentId || childId === parentId) continue;
 
     await db
       .update(schema.tasks)
