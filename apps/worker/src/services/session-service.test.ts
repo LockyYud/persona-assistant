@@ -24,6 +24,35 @@ async function createTask(userId: string, title = "Học tiếng Anh") {
 describe("DrizzleSessionService", () => {
   beforeEach(resetTestDb);
 
+  it("plans a day on an ordinary task, not only on a routine", async () => {
+    // The desktop panel offers today's minutes on every block, so a session
+    // must not require a monthly target. Such a session records time spent
+    // and contributes to no pace, which is the whole of the difference.
+    const userId = await createTestUser();
+    const { tasks, sessions } = makeServices();
+    const plain = await tasks.createTask(userId, {
+      title: "Ship the release",
+      priority: "high",
+      type: "work",
+    });
+
+    const session = await sessions.planSession(userId, {
+      taskId: plain.id,
+      plannedMinutes: 45,
+    });
+
+    expect(session.taskId).toBe(plain.id);
+    expect(plain.monthlyTargetMinutes).toBeNull();
+
+    const done = await sessions.completeSession(userId, { sessionId: session.id });
+    expect(done.actualMinutes).toBe(45);
+
+    // It shows up in the day's list like any other, so the widget can render
+    // it under the task it belongs to.
+    const today = await sessions.listSessionsForDate(userId, session.date);
+    expect(today.map((entry) => entry.task.id)).toEqual([plain.id]);
+  });
+
   it("defaults the day to the user's own today, not the host's", async () => {
     // Kiritimati is UTC+14: for a good part of every UTC day the two disagree
     // about the date, which is the whole reason the column stores a local day.
