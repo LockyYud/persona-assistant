@@ -289,7 +289,13 @@ export async function syncNotionTasksForUser(
 
     for (const notionPage of page.pages) {
       const lastEdited = new Date(notionPage.last_edited_time);
-      if (cursor && lastEdited.getTime() <= cursor.getTime()) {
+      // Strictly older, not "not newer": Notion stamps last_edited_time to the
+      // minute, so several pages routinely share the cursor's exact value. On
+      // `<=` the first of them ends the pass and the rest are never looked at
+      // again, which silently drops both whole pages and later edits made in
+      // the same minute the cursor was written. Re-examining that one minute
+      // every pass costs a few idempotent upserts and cannot lose a page.
+      if (cursor && lastEdited.getTime() < cursor.getTime()) {
         done = true;
         break;
       }
