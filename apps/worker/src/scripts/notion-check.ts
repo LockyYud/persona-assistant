@@ -17,7 +17,7 @@ const REQUIRED: Record<string, { name: string; type: string; optional?: boolean 
     { name: "Type", type: "select" },
     { name: "Description", type: "rich_text" },
     { name: "Due", type: "date" },
-    { name: "Parent", type: "relation" },
+    { name: "Parent item", type: "relation" },
     { name: "Progress", type: "number" },
     { name: "Monthly Target (h)", type: "number", optional: true },
   ],
@@ -30,6 +30,14 @@ const REQUIRED: Record<string, { name: string; type: string; optional?: boolean 
     { name: "Status", type: "select" },
   ],
 };
+
+/**
+ * Properties Notion itself maintains, which the app neither reads nor writes.
+ * Listed so the report never presents them as unused clutter: "Sub-item" is
+ * the other half of the Sub-items relation, and deleting it takes the whole
+ * parent/child tree — and every step's link — down with it.
+ */
+const NOTION_MANAGED = new Set(["Sub-item"]);
 
 async function checkDatabase(apiKey: string, envVar: string): Promise<boolean> {
   const databaseId = process.env[envVar];
@@ -99,9 +107,12 @@ async function checkDatabase(apiKey: string, envVar: string): Promise<boolean> {
   }
 
   const extra = Object.keys(properties).filter(
-    (name) => !(REQUIRED[envVar] ?? []).some((e) => e.name === name),
+    (name) =>
+      !(REQUIRED[envVar] ?? []).some((e) => e.name === name) && !NOTION_MANAGED.has(name),
   );
-  if (extra.length > 0) console.log(`  (ignored by the app: ${extra.join(", ")})`);
+  // Named "unused by the app", not "ignored": the previous wording read as an
+  // invitation to delete these, and some of them are load-bearing elsewhere.
+  if (extra.length > 0) console.log(`  (unused by the app: ${extra.join(", ")})`);
 
   return ok;
 }

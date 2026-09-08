@@ -32,7 +32,7 @@ interface NotionTaskFields {
    * routine quietly demoted to an ordinary task on the next sync pass.
    */
   monthlyTargetMinutes: number | null | undefined;
-  /** Notion page id of this page's parent task, from the "Parent" relation. */
+  /** Notion page id of this page's parent task, from the sub-item relation. */
   parentNotionPageId: string | null;
 }
 
@@ -69,6 +69,14 @@ function isTaskType(value: string | undefined): value is TaskType {
  */
 const MONTHLY_TARGET_PROPERTY = "Monthly Target (h)";
 
+/**
+ * The parent side of Notion's native "Sub-items" relation. Notion owns both
+ * halves of this pair and renders them as the collapsible tree in the table,
+ * so the app writes the relation Notion already draws rather than a
+ * hand-rolled one, which would leave two rival hierarchies in one table.
+ */
+const PARENT_PROPERTY = "Parent item";
+
 /** Reads task fields out of a raw Notion page's properties. */
 export function notionPageToTaskFields(page: NotionPage): NotionTaskFields {
   const properties = page.properties as Record<string, NotionProperty>;
@@ -95,7 +103,7 @@ export function notionPageToTaskFields(page: NotionPage): NotionTaskFields {
       : undefined,
     // A page can relate to several others, but a task has exactly one
     // parent — take the first and ignore the rest.
-    parentNotionPageId: properties.Parent?.relation?.[0]?.id ?? null,
+    parentNotionPageId: properties[PARENT_PROPERTY]?.relation?.[0]?.id ?? null,
   };
 }
 
@@ -139,7 +147,7 @@ export function taskToNotionProperties(
     [MONTHLY_TARGET_PROPERTY]: {
       number: task.monthlyTargetMinutes === null ? null : task.monthlyTargetMinutes / 60,
     },
-    Parent: { relation: parentNotionPageId ? [{ id: parentNotionPageId }] : [] },
+    [PARENT_PROPERTY]: { relation: parentNotionPageId ? [{ id: parentNotionPageId }] : [] },
   };
 }
 
