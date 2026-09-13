@@ -6,6 +6,7 @@ import type {
   CreateTaskInput,
   ListSessionsInput,
   ListTasksInput,
+  PlanTodayInput,
   PlanSessionInput,
   SkipSessionInput,
   UpdateTaskInput,
@@ -48,6 +49,8 @@ export interface ReminderService {
 export interface SessionService {
   /** Idempotent per (task, day) — re-planning revises the existing session. */
   planSession(userId: string, input: PlanSessionInput): Promise<WorkSession>;
+  /** Atomically commits a confirmed set of distinct tasks to the user's today. */
+  planToday(userId: string, input: PlanTodayInput): Promise<WorkSession[]>;
   completeSession(userId: string, input: CompleteSessionInput): Promise<WorkSession>;
   skipSession(userId: string, input: SkipSessionInput): Promise<WorkSession>;
   /** What was picked for one local day, task included — the widget's "today". */

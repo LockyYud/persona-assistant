@@ -6,6 +6,7 @@ import {
   createTaskInputSchema,
   listSessionsInputSchema,
   listTasksInputSchema,
+  planTodayInputSchema,
   planSessionInputSchema,
   proposeTaskBreakdownInputSchema,
   skipSessionInputSchema,
@@ -110,7 +111,7 @@ export function buildToolDefinitions(
       function: {
         name: "listToday",
         description:
-          "What the user committed to today, plus every routine still asking for time this month with its pace. THE tool for 'what am I doing today', 'what should I work on', 'am I on track', 'how's my English going'. Returns each routine's target, what's been done this month, whether it is behind, and how many minutes to suggest for today.",
+          "What the user committed to today, unfinished commitments from yesterday, plus every routine still asking for time this month with its pace. THE tool for 'what am I doing today', 'what should I work on', 'am I on track', 'how's my English going'. If sessions already exist, report them rather than proposing a replacement. If none exist, use due tasks, priority and routine pace to propose a plan; do not create it until the user approves planToday.",
         parameters: { type: "object", properties: {}, additionalProperties: false },
       },
     },
@@ -119,8 +120,17 @@ export function buildToolDefinitions(
       function: {
         name: "planSession",
         description:
-          "Record that the user is spending a stretch of a day on one task — 'today I'll study English for an hour' becomes planSession(taskId, plannedMinutes: 60). Only for tasks pursued at a rate (they have a monthly target); ordinary one-off tasks do not need sessions. There is one session per task per day, so calling this again for the same day revises it rather than adding a second. Pass startAt only if the user named a time, which is also what earns the session a reminder.",
+          "Record one explicit commitment on an ordinary task or a routine — 'today I'll run the baseline for 90 minutes' becomes planSession(taskId, focusText: 'Run baseline', plannedMinutes: 90). There is one session per task per day, so calling this again revises it rather than adding a second. Pass startAt only if the user named a time, which is also what earns a reminder. Completing this session never completes its parent task.",
         parameters: zodToJsonSchema(planSessionInputSchema) as Record<string, unknown>,
+      },
+    },
+    {
+      type: "function",
+      function: {
+        name: "planToday",
+        description:
+          "Propose a complete Today plan containing several distinct top-level tasks/routines. This always requires the user's Telegram approval before it writes anything. Include a short focusText whenever the user named concrete work. Do not use for a single explicit commitment; use planSession for that.",
+        parameters: zodToJsonSchema(planTodayInputSchema) as Record<string, unknown>,
       },
     },
     {
@@ -239,6 +249,12 @@ async function resolveTimezone(ctx: ToolContext): Promise<string> {
   return user?.timezone ?? "Asia/Bangkok";
 }
 
+function previousDate(date: string): string {
+  const noonUtc = new Date(`${date}T12:00:00.000Z`);
+  noonUtc.setUTCDate(noonUtc.getUTCDate() - 1);
+  return noonUtc.toISOString().slice(0, 10);
+}
+
 /**
  * Deliberately no "confirmAction"/"rejectAction" tool exists here. Approving
  * a pending action is a decision only a real user-originated signal (a
@@ -317,15 +333,26 @@ export async function executeTool(
       // is how "1h planned of the 1.2h today wants" gets said.
       const timezone = await resolveTimezone(ctx);
       const date = dateKeyInTimezone(new Date(), timezone);
-      const [sessions, now] = await Promise.all([
+      const [sessions, missedYesterday, now] = await Promise.all([
         ctx.sessionService.listSessionsForDate(ctx.userId, date),
+        ctx.sessionService.listSessionsForDate(ctx.userId, previousDate(date)),
         ctx.taskService.listNowTasks(ctx.userId),
       ]);
-      return { date, timezone, sessions, ongoing: now.ongoing };
+      return {
+        date,
+        timezone,
+        sessions,
+        missedYesterday: missedYesterday.filter((session) => session.status === "planned"),
+        ongoing: now.ongoing,
+      };
     }
     case "planSession": {
       const input = planSessionInputSchema.parse(rawArgs);
       return ctx.sessionService.planSession(ctx.userId, input);
+    }
+    case "planToday": {
+      const input = planTodayInputSchema.parse(rawArgs);
+      return ctx.sessionService.planToday(ctx.userId, input);
     }
     case "completeSession": {
       const input = completeSessionInputSchema.parse(rawArgs);

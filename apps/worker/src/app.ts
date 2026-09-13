@@ -28,7 +28,7 @@ import { DrizzleReminderService } from "./services/reminder-service.js";
 import { TaskBreakdownService } from "./services/task-breakdown.js";
 import { OpenAICompatibleAgentAdapter } from "./agent/openai-compatible-adapter.js";
 import { executeTool } from "./agent/tools.js";
-import { resolveApproval } from "./agent/approvals.js";
+import { claimApproval, finishApproval, rejectApproval } from "./agent/approvals.js";
 import { verifyTickSignature } from "./auth/internal-signature.js";
 import { checkRateLimit, clearAttempts, recordFailedAttempt } from "./auth/password-rate-limiter.js";
 import {
@@ -120,19 +120,29 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     approvalId: string,
     decision: "approved" | "rejected",
   ): Promise<{ ok: true; result: unknown } | { ok: false; error: string }> {
-    const approval = await resolveApproval(db, approvalId, userId, decision);
+    if (decision === "rejected") {
+      const approval = await rejectApproval(db, approvalId, userId);
+      if (!approval) return { ok: false, error: "No matching pending approval found." };
+      return { ok: true, result: { status: "rejected" } };
+    }
+
+    const approval = await claimApproval(db, approvalId, userId);
     if (!approval) return { ok: false, error: "No matching pending approval found." };
-
-    if (decision === "rejected") return { ok: true, result: { status: "rejected" } };
-
-    const result = await executeTool(approval.action, approval.payload, {
-      userId,
-      db,
-      taskService,
-      reminderService,
-      sessionService,
-    });
-    return { ok: true, result };
+    try {
+      const result = await executeTool(approval.action, approval.payload, {
+        userId,
+        db,
+        taskService,
+        reminderService,
+        sessionService,
+      });
+      await finishApproval(db, approval.id, "approved");
+      return { ok: true, result };
+    } catch (error) {
+      await finishApproval(db, approval.id, "failed");
+      const detail = error instanceof Error ? error.message : String(error);
+      return { ok: false, error: `Plan could not be applied: ${detail}. Please make a new plan.` };
+    }
   }
 
   app.addHook("onRequest", async (request, reply) => {
@@ -362,11 +372,20 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   async function loadToday(userId: string, date?: string) {
     const timezone = await resolveUserTimezone(userId);
     const resolved = date ?? dateKeyInTimezone(new Date(), timezone);
-    const [sessions, now] = await Promise.all([
+    const yesterday = new Date(`${resolved}T12:00:00.000Z`);
+    yesterday.setUTCDate(yesterday.getUTCDate() - 1);
+    const [sessions, yesterdaySessions, now] = await Promise.all([
       sessionService.listSessionsForDate(userId, resolved),
+      sessionService.listSessionsForDate(userId, yesterday.toISOString().slice(0, 10)),
       taskService.listNowTasks(userId),
     ]);
-    return { date: resolved, timezone, sessions, ongoing: now.ongoing };
+    return {
+      date: resolved,
+      timezone,
+      sessions,
+      missedYesterday: yesterdaySessions.filter((session) => session.status === "planned"),
+      ongoing: now.ongoing,
+    };
   }
 
   async function resolveUserTimezone(userId: string): Promise<string> {

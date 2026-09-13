@@ -38,7 +38,15 @@ export function sessionToNotionProperties(
     // The duration rides in the title because that is all a calendar block
     // shows at a glance.
     Title: {
-      title: [{ text: { content: `${taskTitle} · ${formatMinutes(session.plannedMinutes)}` } }],
+      title: [
+        {
+          text: {
+            content: [taskTitle, session.focusText, formatMinutes(session.plannedMinutes)]
+              .filter(Boolean)
+              .join(" · "),
+          },
+        },
+      ],
     },
     Task: { relation: taskNotionPageId ? [{ id: taskNotionPageId }] : [] },
     Date: { date },

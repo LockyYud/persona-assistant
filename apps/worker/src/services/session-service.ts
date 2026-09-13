@@ -4,6 +4,7 @@ import type { NotionClient } from "@persona/integrations";
 import type {
   CompleteSessionInput,
   ListSessionsInput,
+  PlanTodayInput,
   PlanSessionInput,
   SessionService,
   SkipSessionInput,
@@ -25,6 +26,7 @@ function toDomainSession(row: typeof schema.workSessions.$inferSelect): WorkSess
     taskId: row.taskId,
     date: row.date,
     startAt: row.startAt,
+    focusText: row.focusText,
     plannedMinutes: row.plannedMinutes,
     actualMinutes: row.actualMinutes,
     status: row.status,
@@ -70,7 +72,15 @@ export class DrizzleSessionService implements SessionService {
       .from(schema.tasks)
       .where(and(eq(schema.tasks.id, taskId), eq(schema.tasks.userId, userId)));
     if (!row) throw new Error("Task not found");
-    return toDomainTask(row);
+    return this.requirePlannableTask(toDomainTask(row));
+  }
+
+  private requirePlannableTask(task: Task): Task {
+    if (task.parentTaskId) throw new Error("Steps cannot be planned as Today items");
+    if (task.status === "done" || task.status === "cancelled") {
+      throw new Error("Task is no longer active for planning");
+    }
+    return task;
   }
 
   /**
@@ -112,6 +122,52 @@ export class DrizzleSessionService implements SessionService {
     return row ? toDomainSession(row) : { ...session, reminderId: null };
   }
 
+  private async writeSession(
+    tx: Tx,
+    task: Task,
+    date: string,
+    input: Pick<PlanSessionInput, "plannedMinutes" | "focusText" | "startAt">,
+    timezone: string,
+  ): Promise<WorkSession> {
+    const [existing] = await tx
+      .select()
+      .from(schema.workSessions)
+      .where(and(eq(schema.workSessions.taskId, task.id), eq(schema.workSessions.date, date)))
+      .for("update");
+
+    if (!existing) {
+      const [row] = await tx
+        .insert(schema.workSessions)
+        .values({
+          userId: task.userId,
+          taskId: task.id,
+          date,
+          plannedMinutes: input.plannedMinutes,
+          focusText: input.focusText ?? null,
+          startAt: input.startAt ? new Date(input.startAt) : null,
+        })
+        .returning();
+      if (!row) throw new Error("Failed to plan session");
+      return this.reconcileReminder(tx, toDomainSession(row), task.title, timezone);
+    }
+
+    const updates: Partial<typeof schema.workSessions.$inferInsert> = {
+      plannedMinutes: input.plannedMinutes,
+      status: existing.status === "skipped" ? "planned" : existing.status,
+      updatedAt: new Date(),
+    };
+    if (input.focusText !== undefined) updates.focusText = input.focusText;
+    if (input.startAt !== undefined) updates.startAt = new Date(input.startAt);
+
+    const [row] = await tx
+      .update(schema.workSessions)
+      .set(updates)
+      .where(eq(schema.workSessions.id, existing.id))
+      .returning();
+    if (!row) throw new Error("Failed to revise session");
+    return this.reconcileReminder(tx, toDomainSession(row), task.title, timezone);
+  }
+
   /**
    * Commits a stretch of a day to one task.
    *
@@ -129,45 +185,42 @@ export class DrizzleSessionService implements SessionService {
     const timezone = await this.resolveTimezone(userId);
     const date = input.date ?? dateKeyInTimezone(new Date(), timezone);
 
-    const session = await this.db.transaction(async (tx) => {
-      const [existing] = await tx
-        .select()
-        .from(schema.workSessions)
-        .where(and(eq(schema.workSessions.taskId, task.id), eq(schema.workSessions.date, date)))
-        .for("update");
-
-      if (!existing) {
-        const [row] = await tx
-          .insert(schema.workSessions)
-          .values({
-            userId,
-            taskId: task.id,
-            date,
-            plannedMinutes: input.plannedMinutes,
-            startAt: input.startAt ? new Date(input.startAt) : null,
-          })
-          .returning();
-        if (!row) throw new Error("Failed to plan session");
-        return this.reconcileReminder(tx, toDomainSession(row), task.title, timezone);
-      }
-
-      const updates: Partial<typeof schema.workSessions.$inferInsert> = {
-        plannedMinutes: input.plannedMinutes,
-        status: existing.status === "skipped" ? "planned" : existing.status,
-        updatedAt: new Date(),
-      };
-      if (input.startAt !== undefined) updates.startAt = new Date(input.startAt);
-
-      const [row] = await tx
-        .update(schema.workSessions)
-        .set(updates)
-        .where(eq(schema.workSessions.id, existing.id))
-        .returning();
-      if (!row) throw new Error("Failed to revise session");
-      return this.reconcileReminder(tx, toDomainSession(row), task.title, timezone);
-    });
+    const session = await this.db.transaction((tx) => this.writeSession(tx, task, date, input, timezone));
 
     return this.syncToNotion(session);
+  }
+
+  async planToday(userId: string, input: PlanTodayInput): Promise<WorkSession[]> {
+    const uniqueTaskIds = new Set(input.items.map((item) => item.taskId));
+    if (uniqueTaskIds.size !== input.items.length) throw new Error("A task may appear only once in Today");
+    if (input.items.reduce((total, item) => total + item.plannedMinutes, 0) > 24 * 60) {
+      throw new Error("Today plan exceeds one day");
+    }
+    const timezone = await this.resolveTimezone(userId);
+    const date = dateKeyInTimezone(new Date(), timezone);
+    const sessions = await this.db.transaction(async (tx) => {
+      // Lock and validate every parent task before writing any session. This
+      // makes a plan stale if a task was closed between proposal and approval,
+      // rather than applying only the earlier items.
+      const tasks: Task[] = [];
+      for (const item of input.items) {
+        const [row] = await tx
+          .select()
+          .from(schema.tasks)
+          .where(and(eq(schema.tasks.id, item.taskId), eq(schema.tasks.userId, userId)))
+          .for("update");
+        if (!row) throw new Error("Task not found");
+        tasks.push(this.requirePlannableTask(toDomainTask(row)));
+      }
+      const written: WorkSession[] = [];
+      for (const [index, item] of input.items.entries()) {
+        const task = tasks[index];
+        if (!task) throw new Error("Task not found");
+        written.push(await this.writeSession(tx, task, date, item, timezone));
+      }
+      return written;
+    });
+    return Promise.all(sessions.map((session) => this.syncToNotion(session)));
   }
 
   /**

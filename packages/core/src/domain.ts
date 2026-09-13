@@ -98,6 +98,8 @@ export interface WorkSession {
   /** The user's local calendar day, YYYY-MM-DD. */
   date: string;
   startAt: Date | null;
+  /** What the user intends to focus on during this day's commitment. */
+  focusText: string | null;
   plannedMinutes: number;
   /** Null while still planned; on completion it defaults to plannedMinutes. */
   actualMinutes: number | null;

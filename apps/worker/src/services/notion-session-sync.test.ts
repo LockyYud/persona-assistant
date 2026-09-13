@@ -9,6 +9,7 @@ function session(overrides: Partial<WorkSession> = {}): WorkSession {
     taskId: "t1",
     date: "2026-09-07",
     startAt: null,
+    focusText: null,
     plannedMinutes: 60,
     actualMinutes: null,
     status: "planned",
@@ -47,6 +48,16 @@ describe("sessionToNotionProperties", () => {
     );
 
     expect(props.Title).toEqual({ title: [{ text: { content: "Học tiếng Anh · 1h30m" } }] });
+  });
+
+  it("includes a daily focus in the existing title property", () => {
+    const props = sessionToNotionProperties(
+      session({ focusText: "Run baseline", plannedMinutes: 90 }),
+      "RAG Lab",
+      "task-page-1",
+    );
+
+    expect(props.Title).toEqual({ title: [{ text: { content: "RAG Lab · Run baseline · 1h30m" } }] });
   });
 
   it("leaves the relation empty when the task has no Notion page yet", () => {

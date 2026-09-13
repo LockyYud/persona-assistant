@@ -301,7 +301,7 @@ export const approvalRequests = pgTable("approval_requests", {
   agentRunId: uuid("agent_run_id").references(() => agentRuns.id, { onDelete: "set null" }),
   action: text("action").notNull(),
   payload: jsonb("payload").notNull(),
-  status: text("status", { enum: ["pending", "approved", "rejected", "expired"] })
+  status: text("status", { enum: ["pending", "executing", "approved", "rejected", "failed", "expired"] })
     .notNull()
     .default("pending"),
   approvedAt: timestamp("approved_at", { withTimezone: true }),
@@ -363,6 +363,9 @@ export const workSessions = pgTable(
     // makes it render as a time block rather than an all-day item on a
     // calendar. A session without it is still a real commitment for the day.
     startAt: timestamp("start_at", { withTimezone: true }),
+    // A short, user-facing intention for this particular day. Unlike a
+    // subtask it is not durable task structure and never affects progress.
+    focusText: text("focus_text"),
     plannedMinutes: integer("planned_minutes").notNull(),
     // Null until the session is closed out. On completion an omitted value
     // falls back to plannedMinutes — that is what makes simply ticking a

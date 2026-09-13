@@ -352,4 +352,83 @@ describe("telegram webhook resilience", () => {
     expect(threads).toHaveLength(1);
     expect(threads[0]?.channel).toBe("telegram");
   });
+
+  it("executes a confirmed Today plan once and marks it approved only after success", async () => {
+    const userId = await linkedUser("558");
+    const [task] = await getTestDb()
+      .insert(schema.tasks)
+      .values({ userId, title: "RAG Lab", priority: "high", type: "work" })
+      .returning();
+    const [approval] = await getTestDb()
+      .insert(schema.approvalRequests)
+      .values({
+        userId,
+        action: "planToday",
+        payload: { items: [{ taskId: task!.id, focusText: "Run baseline", plannedMinutes: 90 }] },
+      })
+      .returning();
+    const app = buildApp({ db: getTestDb(), notificationChannel: stubChannel() });
+    const callback = {
+      callback_query: {
+        id: "callback-1",
+        message: { message_id: 1, chat: { id: 558 } },
+        data: `approval:${approval!.id}:approve`,
+      },
+    };
+
+    expect(
+      (await app.inject({
+        method: "POST",
+        url: "/telegram/webhook",
+        headers: { "x-telegram-bot-api-secret-token": WEBHOOK_SECRET },
+        payload: callback,
+      })).statusCode,
+    ).toBe(200);
+    expect(await getTestDb().select().from(schema.workSessions)).toHaveLength(1);
+    const [stored] = await getTestDb()
+      .select()
+      .from(schema.approvalRequests)
+      .where(eq(schema.approvalRequests.id, approval!.id));
+    expect(stored?.status).toBe("approved");
+
+    await app.inject({
+      method: "POST",
+      url: "/telegram/webhook",
+      headers: { "x-telegram-bot-api-secret-token": WEBHOOK_SECRET },
+      payload: callback,
+    });
+    expect(await getTestDb().select().from(schema.workSessions)).toHaveLength(1);
+  });
+
+  it("marks a stale Today plan failed without creating a partial plan", async () => {
+    const userId = await linkedUser("559");
+    const [task] = await getTestDb()
+      .insert(schema.tasks)
+      .values({ userId, title: "Closed", status: "done", priority: "high", type: "work" })
+      .returning();
+    const [approval] = await getTestDb()
+      .insert(schema.approvalRequests)
+      .values({ userId, action: "planToday", payload: { items: [{ taskId: task!.id, plannedMinutes: 60 }] } })
+      .returning();
+    const app = buildApp({ db: getTestDb(), notificationChannel: stubChannel() });
+
+    await app.inject({
+      method: "POST",
+      url: "/telegram/webhook",
+      headers: { "x-telegram-bot-api-secret-token": WEBHOOK_SECRET },
+      payload: {
+        callback_query: {
+          id: "callback-2",
+          message: { message_id: 1, chat: { id: 559 } },
+          data: `approval:${approval!.id}:approve`,
+        },
+      },
+    });
+    expect(await getTestDb().select().from(schema.workSessions)).toEqual([]);
+    const [stored] = await getTestDb()
+      .select()
+      .from(schema.approvalRequests)
+      .where(eq(schema.approvalRequests.id, approval!.id));
+    expect(stored?.status).toBe("failed");
+  });
 });

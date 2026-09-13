@@ -3,6 +3,7 @@ import { createTestUser, getTestDb, resetTestDb } from "../test-support/db.js";
 import { DrizzleReminderService } from "../services/reminder-service.js";
 import { DrizzleSessionService } from "../services/session-service.js";
 import { DrizzleTaskService } from "../services/task-service.js";
+import { dateKeyInTimezone } from "../services/local-time.js";
 import { buildToolDefinitions, executeTool, type ToolContext } from "./tools.js";
 
 function makeContext(userId: string): ToolContext {
@@ -27,9 +28,56 @@ describe("session tools", () => {
     // and would surprise the user with an approval prompt.
     expect(names).toContain("listToday");
     expect(names).toContain("planSession");
+    expect(names).toContain("planToday");
     expect(names).toContain("completeSession");
     expect(names).toContain("skipSession");
     expect(names).toContain("listSessions");
+  });
+
+  it("returns yesterday's unfinished commitments without carrying them forward", async () => {
+    const userId = await createTestUser();
+    const ctx = makeContext(userId);
+    const task = await ctx.taskService.createTask(userId, {
+      title: "RAG Lab",
+      priority: "high",
+      type: "work",
+    });
+    const today = dateKeyInTimezone(new Date(), "Asia/Bangkok");
+    const yesterday = new Date(`${today}T12:00:00.000Z`);
+    yesterday.setUTCDate(yesterday.getUTCDate() - 1);
+    await ctx.sessionService.planSession(userId, {
+      taskId: task.id,
+      date: yesterday.toISOString().slice(0, 10),
+      plannedMinutes: 90,
+      focusText: "Run baseline",
+    });
+
+    const result = (await executeTool("listToday", {}, ctx)) as {
+      sessions: unknown[];
+      missedYesterday: { taskId: string; focusText: string | null }[];
+    };
+    expect(result.sessions).toEqual([]);
+    expect(result.missedYesterday).toHaveLength(1);
+    expect(result.missedYesterday[0]).toMatchObject({ taskId: task.id, focusText: "Run baseline" });
+  });
+
+  it("accepts a confirmed Today batch through the tool contract", async () => {
+    const userId = await createTestUser();
+    const ctx = makeContext(userId);
+    const first = await ctx.taskService.createTask(userId, { title: "RAG", priority: "high", type: "work" });
+    const second = await ctx.taskService.createTask(userId, { title: "CV", priority: "medium", type: "work" });
+
+    const result = (await executeTool(
+      "planToday",
+      {
+        items: [
+          { taskId: first.id, focusText: "Run baseline", plannedMinutes: 90 },
+          { taskId: second.id, focusText: "Review CV", plannedMinutes: 30 },
+        ],
+      },
+      ctx,
+    )) as { focusText: string | null }[];
+    expect(result.map((session) => session.focusText)).toEqual(["Run baseline", "Review CV"]);
   });
 
   it("plans a day of work from a chat-shaped call and reports it back in listToday", async () => {

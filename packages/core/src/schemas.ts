@@ -12,6 +12,7 @@ export const dateKeySchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "expected Y
 
 /** One day's worth of work, so a whole day is the ceiling. */
 const sessionMinutesSchema = z.number().int().min(1).max(24 * 60);
+const focusTextSchema = z.string().trim().min(1).max(280);
 
 export const createTaskInputSchema = z.object({
   title: z.string().min(1).max(200),
@@ -137,10 +138,39 @@ export const planSessionInputSchema = z.object({
   /** Defaults to the user's own today, resolved in their timezone. */
   date: dateKeySchema.optional(),
   plannedMinutes: sessionMinutesSchema,
+  /** Omit to retain an existing focus; null explicitly clears it. */
+  focusText: focusTextSchema.nullable().optional(),
   /** Only for a session meant to happen at a set time; earns it a reminder. */
   startAt: z.string().datetime().optional(),
 });
 export type PlanSessionInput = z.infer<typeof planSessionInputSchema>;
+
+/** A proposed commitment in the one-click Today plan shown in Telegram. */
+export const planTodayItemInputSchema = z.object({
+  taskId: z.string().uuid(),
+  focusText: focusTextSchema.nullable().optional(),
+  plannedMinutes: sessionMinutesSchema,
+  startAt: z.string().datetime().optional(),
+});
+
+/** Plans several distinct top-level tasks for the user's local current day. */
+export const planTodayInputSchema = z
+  .object({ items: z.array(planTodayItemInputSchema).min(1).max(12) })
+  .superRefine(({ items }, ctx) => {
+    const ids = new Set<string>();
+    let total = 0;
+    for (const [index, item] of items.entries()) {
+      if (ids.has(item.taskId)) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["items", index, "taskId"], message: "task may appear only once" });
+      }
+      ids.add(item.taskId);
+      total += item.plannedMinutes;
+    }
+    if (total > 24 * 60) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["items"], message: "planned minutes exceed one day" });
+    }
+  });
+export type PlanTodayInput = z.infer<typeof planTodayInputSchema>;
 
 /**
  * Closes a session out as done. Omitting actualMinutes credits the minutes

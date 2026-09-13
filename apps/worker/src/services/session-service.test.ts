@@ -89,6 +89,84 @@ describe("DrizzleSessionService", () => {
     expect(all).toHaveLength(1);
   });
 
+  it("keeps daily focus separate from task structure and lets a revision change it", async () => {
+    const userId = await createTestUser();
+    const task = await createTask(userId, "RAG Lab");
+    const { sessions } = makeServices();
+
+    const first = await sessions.planSession(userId, {
+      taskId: task.id,
+      date: "2026-09-07",
+      plannedMinutes: 60,
+      focusText: "Run baseline",
+    });
+    const revised = await sessions.planSession(userId, {
+      taskId: task.id,
+      date: "2026-09-07",
+      plannedMinutes: 90,
+      focusText: "Review metrics",
+    });
+
+    expect(first.focusText).toBe("Run baseline");
+    expect(revised).toMatchObject({ focusText: "Review metrics", plannedMinutes: 90 });
+    expect(await makeServices().tasks.listSubtasks(userId, task.id)).toEqual([]);
+  });
+
+  it("plans a confirmed Today batch atomically for ordinary tasks and routines", async () => {
+    const userId = await createTestUser();
+    const { tasks, sessions } = makeServices();
+    const ordinary = await tasks.createTask(userId, { title: "RAG Lab", priority: "high", type: "work" });
+    const routine = await createTask(userId, "English");
+
+    const planned = await sessions.planToday(userId, {
+      items: [
+        { taskId: ordinary.id, focusText: "Run baseline", plannedMinutes: 90 },
+        { taskId: routine.id, focusText: "Speaking", plannedMinutes: 45 },
+      ],
+    });
+
+    expect(planned).toHaveLength(2);
+    expect(planned.map((item) => item.focusText)).toEqual(["Run baseline", "Speaking"]);
+    expect(new Set(planned.map((item) => item.date)).size).toBe(1);
+  });
+
+  it("refuses an invalid Today batch before it writes any session", async () => {
+    const userId = await createTestUser();
+    const { tasks, sessions } = makeServices();
+    const valid = await tasks.createTask(userId, { title: "Valid", priority: "high", type: "work" });
+    const terminal = await tasks.createTask(userId, { title: "Closed", priority: "high", type: "work" });
+    await tasks.completeTask(userId, { taskId: terminal.id });
+
+    await expect(
+      sessions.planToday(userId, {
+        items: [
+          { taskId: valid.id, plannedMinutes: 60 },
+          { taskId: terminal.id, plannedMinutes: 60 },
+        ],
+      }),
+    ).rejects.toThrow("no longer active");
+    expect(await sessions.listSessions(userId, {})).toEqual([]);
+  });
+
+  it("refuses Today items for steps and duplicate tasks", async () => {
+    const userId = await createTestUser();
+    const { tasks, sessions } = makeServices();
+    const parent = await tasks.createTask(userId, { title: "Parent", priority: "high", type: "work" });
+    const [step] = await tasks.createSubtasks(userId, { parentTaskId: parent.id, titles: ["Step"] });
+
+    await expect(sessions.planToday(userId, { items: [{ taskId: step!.id, plannedMinutes: 60 }] })).rejects.toThrow(
+      "Steps cannot",
+    );
+    await expect(
+      sessions.planToday(userId, {
+        items: [
+          { taskId: parent.id, plannedMinutes: 60 },
+          { taskId: parent.id, plannedMinutes: 60 },
+        ],
+      }),
+    ).rejects.toThrow("only once");
+  });
+
   it("revives a day it had been told to skip", async () => {
     const userId = await createTestUser();
     const task = await createTask(userId);

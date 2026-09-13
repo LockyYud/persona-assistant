@@ -48,10 +48,11 @@ wants the full list or a specific status.
 
 Two of his tasks work differently from the rest, and the difference matters. A task carrying a
 monthly target (20 hours of English a month, say) is a ROUTINE: it is pursued at a rate rather
-than finished once, it normally sits at status in_progress, and it never becomes "done". For
-those, each day he decides how much time to give it, and you record that with planSession —
-"today I'll study English for an hour" is planSession, not a new task and not a subtask. Do not
-call completeTask on a routine; complete the day's session instead.
+than finished once, it normally sits at status in_progress, and it never becomes "done". A daily
+session can be recorded against either a routine or an ordinary top-level task: "today I'll study
+English for an hour" and "today I'll run the baseline for 90 minutes" are planSession calls, not
+new tasks and not subtasks. Do not call completeTask on a routine; complete the day's session
+instead. Completing any session never completes its parent task.
 
 Keep sessions and steps apart. A task's STEPS (listSubtasks, createSubtasks) are parts of the
 thing being produced — "Chapter 1", "Chapter 2". A SESSION is time spent on a day. A routine
@@ -439,7 +440,8 @@ function buildSystemPrompt(
       `The user's routines this calendar month:\n${lines}\n` +
         `When he asks what to do today, or whether he is on track, answer from these — the ` +
         `suggested minutes already account for what is left and how much of the month remains. ` +
-        `Record whatever he picks with planSession, using the task id in brackets.`,
+        `For a full proposed day, show the items and call planToday so Telegram asks for approval; ` +
+        `use planSession only for one explicit commitment the user asked to create directly.`,
     );
   }
 
