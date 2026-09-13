@@ -23,7 +23,8 @@ type DbOrTx = Database | Tx;
  * it — a reminder at an arbitrary hour would be noise.
  */
 function reminderMessage(taskTitle: string, session: WorkSession): string {
-  return `Đến giờ: ${taskTitle} (${formatMinutes(session.plannedMinutes)})`;
+  const focus = session.focusText ? `\n${session.focusText}` : "";
+  return `Đến giờ: ${taskTitle}${focus} · ${formatMinutes(session.plannedMinutes)}`;
 }
 
 /** Marks a session's reminder cancelled, if it has one still waiting to fire. */

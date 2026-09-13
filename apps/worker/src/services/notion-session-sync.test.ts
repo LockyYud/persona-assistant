@@ -10,6 +10,7 @@ function session(overrides: Partial<WorkSession> = {}): WorkSession {
     date: "2026-09-07",
     startAt: null,
     focusText: null,
+    position: 1,
     plannedMinutes: 60,
     actualMinutes: null,
     status: "planned",

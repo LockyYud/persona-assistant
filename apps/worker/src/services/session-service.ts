@@ -3,10 +3,11 @@ import { schema, type Database } from "@persona/db";
 import type { NotionClient } from "@persona/integrations";
 import type {
   CompleteSessionInput,
+  CancelSessionInput,
   ListSessionsInput,
-  PlanTodayInput,
   PlanSessionInput,
   SessionService,
+  SetTodayPlanInput,
   SkipSessionInput,
   Task,
   WorkSession,
@@ -27,6 +28,7 @@ function toDomainSession(row: typeof schema.workSessions.$inferSelect): WorkSess
     date: row.date,
     startAt: row.startAt,
     focusText: row.focusText,
+    position: row.position,
     plannedMinutes: row.plannedMinutes,
     actualMinutes: row.actualMinutes,
     status: row.status,
@@ -126,16 +128,35 @@ export class DrizzleSessionService implements SessionService {
     tx: Tx,
     task: Task,
     date: string,
-    input: Pick<PlanSessionInput, "plannedMinutes" | "focusText" | "startAt">,
+    input: Pick<PlanSessionInput, "sessionId" | "plannedMinutes" | "focusText" | "startAt">,
     timezone: string,
+    position?: number,
   ): Promise<WorkSession> {
-    const [existing] = await tx
-      .select()
-      .from(schema.workSessions)
-      .where(and(eq(schema.workSessions.taskId, task.id), eq(schema.workSessions.date, date)))
-      .for("update");
+    if (input.startAt && dateKeyInTimezone(new Date(input.startAt), timezone) !== date) {
+      throw new Error("startAt must be on the session's local calendar day");
+    }
+    const [existing] = input.sessionId
+      ? await tx
+          .select()
+          .from(schema.workSessions)
+          .where(and(eq(schema.workSessions.id, input.sessionId), eq(schema.workSessions.userId, task.userId)))
+          .for("update")
+      : [];
+
+    if (input.sessionId && (!existing || existing.date !== date || existing.taskId !== task.id)) {
+      throw new Error("Today item is no longer available for this plan");
+    }
+    if (existing && existing.status !== "planned") {
+      throw new Error("Only planned Today items can be revised");
+    }
 
     if (!existing) {
+      const [last] = await tx
+        .select({ position: schema.workSessions.position })
+        .from(schema.workSessions)
+        .where(and(eq(schema.workSessions.userId, task.userId), eq(schema.workSessions.date, date)))
+        .orderBy(sql`${schema.workSessions.position} desc`)
+        .limit(1);
       const [row] = await tx
         .insert(schema.workSessions)
         .values({
@@ -145,6 +166,7 @@ export class DrizzleSessionService implements SessionService {
           plannedMinutes: input.plannedMinutes,
           focusText: input.focusText ?? null,
           startAt: input.startAt ? new Date(input.startAt) : null,
+          position: position ?? (last?.position ?? 0) + 1,
         })
         .returning();
       if (!row) throw new Error("Failed to plan session");
@@ -153,7 +175,7 @@ export class DrizzleSessionService implements SessionService {
 
     const updates: Partial<typeof schema.workSessions.$inferInsert> = {
       plannedMinutes: input.plannedMinutes,
-      status: existing.status === "skipped" ? "planned" : existing.status,
+      position: position ?? existing.position,
       updatedAt: new Date(),
     };
     if (input.focusText !== undefined) updates.focusText = input.focusText;
@@ -168,18 +190,7 @@ export class DrizzleSessionService implements SessionService {
     return this.reconcileReminder(tx, toDomainSession(row), task.title, timezone);
   }
 
-  /**
-   * Commits a stretch of a day to one task.
-   *
-   * Idempotent per (task, day): because there can only be one session per task
-   * per day, planning the same pair again has to mean "actually, make it 90
-   * minutes" rather than failing. Two details of that revision are deliberate.
-   * A day previously passed on comes back to life, since re-planning it is
-   * plainly a change of mind; but a session already finished stays finished —
-   * revising a commitment is not the same as un-doing work that happened. And
-   * an omitted startAt leaves any existing one alone rather than clearing it,
-   * so adjusting the length of a session doesn't silently strip its time.
-   */
+  /** Appends a commitment or revises the explicitly identified planned item. */
   async planSession(userId: string, input: PlanSessionInput): Promise<WorkSession> {
     const task = await this.requireTask(userId, input.taskId);
     const timezone = await this.resolveTimezone(userId);
@@ -190,18 +201,29 @@ export class DrizzleSessionService implements SessionService {
     return this.syncToNotion(session);
   }
 
-  async planToday(userId: string, input: PlanTodayInput): Promise<WorkSession[]> {
-    const uniqueTaskIds = new Set(input.items.map((item) => item.taskId));
-    if (uniqueTaskIds.size !== input.items.length) throw new Error("A task may appear only once in Today");
+  async setTodayPlan(userId: string, input: SetTodayPlanInput): Promise<WorkSession[]> {
     if (input.items.reduce((total, item) => total + item.plannedMinutes, 0) > 24 * 60) {
       throw new Error("Today plan exceeds one day");
     }
     const timezone = await this.resolveTimezone(userId);
     const date = dateKeyInTimezone(new Date(), timezone);
     const sessions = await this.db.transaction(async (tx) => {
-      // Lock and validate every parent task before writing any session. This
-      // makes a plan stale if a task was closed between proposal and approval,
-      // rather than applying only the earlier items.
+      const existingPlanned = await tx
+        .select()
+        .from(schema.workSessions)
+        .where(
+          and(
+            eq(schema.workSessions.userId, userId),
+            eq(schema.workSessions.date, date),
+            eq(schema.workSessions.status, "planned"),
+          ),
+        )
+        .for("update");
+      const existingIds = new Set(existingPlanned.map((session) => session.id));
+      const retainedIds = new Set(input.items.flatMap((item) => (item.sessionId ? [item.sessionId] : [])));
+      for (const id of retainedIds) {
+        if (!existingIds.has(id)) throw new Error("Today item is no longer available for this plan");
+      }
       const tasks: Task[] = [];
       for (const item of input.items) {
         const [row] = await tx
@@ -216,9 +238,19 @@ export class DrizzleSessionService implements SessionService {
       for (const [index, item] of input.items.entries()) {
         const task = tasks[index];
         if (!task) throw new Error("Task not found");
-        written.push(await this.writeSession(tx, task, date, item, timezone));
+        written.push(await this.writeSession(tx, task, date, item, timezone, index + 1));
       }
-      return written;
+      const cancelled: WorkSession[] = [];
+      for (const existing of existingPlanned) {
+        if (retainedIds.has(existing.id)) continue;
+        const [row] = await tx
+          .update(schema.workSessions)
+          .set({ status: "cancelled", actualMinutes: null, updatedAt: new Date() })
+          .where(eq(schema.workSessions.id, existing.id))
+          .returning();
+        if (row) cancelled.push(await this.dropReminder(tx, toDomainSession(row)));
+      }
+      return [...written, ...cancelled];
     });
     return Promise.all(sessions.map((session) => this.syncToNotion(session)));
   }
@@ -240,7 +272,11 @@ export class DrizzleSessionService implements SessionService {
           updatedAt: new Date(),
         })
         .where(
-          and(eq(schema.workSessions.id, input.sessionId), eq(schema.workSessions.userId, userId)),
+          and(
+            eq(schema.workSessions.id, input.sessionId),
+            eq(schema.workSessions.userId, userId),
+            eq(schema.workSessions.status, "planned"),
+          ),
         )
         .returning();
       if (!row) throw new Error("Session not found");
@@ -262,7 +298,11 @@ export class DrizzleSessionService implements SessionService {
         .update(schema.workSessions)
         .set({ status: "skipped", actualMinutes: null, updatedAt: new Date() })
         .where(
-          and(eq(schema.workSessions.id, input.sessionId), eq(schema.workSessions.userId, userId)),
+          and(
+            eq(schema.workSessions.id, input.sessionId),
+            eq(schema.workSessions.userId, userId),
+            eq(schema.workSessions.status, "planned"),
+          ),
         )
         .returning();
       if (!row) throw new Error("Session not found");
@@ -272,15 +312,32 @@ export class DrizzleSessionService implements SessionService {
     return this.syncToNotion(session);
   }
 
+  async cancelSession(userId: string, input: CancelSessionInput): Promise<WorkSession> {
+    const session = await this.db.transaction(async (tx) => {
+      const [row] = await tx
+        .update(schema.workSessions)
+        .set({ status: "cancelled", actualMinutes: null, updatedAt: new Date() })
+        .where(
+          and(
+            eq(schema.workSessions.id, input.sessionId),
+            eq(schema.workSessions.userId, userId),
+            eq(schema.workSessions.status, "planned"),
+          ),
+        )
+        .returning();
+      if (!row) throw new Error("Planned session not found");
+      return this.dropReminder(tx, toDomainSession(row));
+    });
+    return this.syncToNotion(session);
+  }
+
   async listSessionsForDate(userId: string, date: string): Promise<WorkSessionWithTask[]> {
     const rows = await this.db
       .select({ session: schema.workSessions, task: schema.tasks })
       .from(schema.workSessions)
       .innerJoin(schema.tasks, eq(schema.tasks.id, schema.workSessions.taskId))
       .where(and(eq(schema.workSessions.userId, userId), eq(schema.workSessions.date, date)))
-      // Timed sessions first, in clock order; the rest keep their planning
-      // order, so "what am I doing today" reads top to bottom.
-      .orderBy(asc(schema.workSessions.startAt), asc(schema.workSessions.createdAt));
+      .orderBy(asc(schema.workSessions.position), asc(schema.workSessions.createdAt));
 
     return rows.map(({ session, task }) => ({
       ...toDomainSession(session),
@@ -298,7 +355,7 @@ export class DrizzleSessionService implements SessionService {
       .select()
       .from(schema.workSessions)
       .where(and(...filters))
-      .orderBy(asc(schema.workSessions.date));
+      .orderBy(asc(schema.workSessions.date), asc(schema.workSessions.position));
 
     return rows.map(toDomainSession);
   }

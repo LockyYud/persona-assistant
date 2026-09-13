@@ -4,8 +4,10 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { createTestUser, getTestDb, resetTestDb } from "../test-support/db.js";
 import { DrizzleSessionService } from "./session-service.js";
 import { DrizzleTaskService } from "./task-service.js";
+import { dateKeyInTimezone } from "./local-time.js";
 
 const HOUR = 3_600_000;
+const todayFor = (at: Date) => dateKeyInTimezone(at, "Asia/Bangkok");
 
 function makeServices() {
   const db = getTestDb();
@@ -43,6 +45,7 @@ describe("session reminders", () => {
     const session = await sessions.planSession(userId, {
       taskId: task.id,
       plannedMinutes: 60,
+      date: todayFor(startAt),
       startAt: startAt.toISOString(),
     });
 
@@ -78,6 +81,7 @@ describe("session reminders", () => {
       taskId: task.id,
       plannedMinutes: 60,
       startAt: new Date(Date.now() - HOUR).toISOString(),
+      date: todayFor(new Date(Date.now() - HOUR)),
     });
 
     expect(session.reminderId).toBeNull();
@@ -88,17 +92,21 @@ describe("session reminders", () => {
     const userId = await createTestUser();
     const task = await createRoutine(userId);
     const { sessions } = makeServices();
+    const firstAt = new Date("2099-06-01T09:00:00.000Z");
+    const movedTo = new Date("2099-06-01T12:00:00.000Z");
     const first = await sessions.planSession(userId, {
       taskId: task.id,
       plannedMinutes: 60,
-      startAt: new Date(Date.now() + 2 * HOUR).toISOString(),
+      startAt: firstAt.toISOString(),
+      date: todayFor(firstAt),
     });
 
-    const movedTo = new Date(Date.now() + 5 * HOUR);
     const revised = await sessions.planSession(userId, {
+      sessionId: first.id,
       taskId: task.id,
       plannedMinutes: 60,
       startAt: movedTo.toISOString(),
+      date: todayFor(movedTo),
     });
 
     const active = await activeReminders(task.id);
@@ -115,6 +123,7 @@ describe("session reminders", () => {
       taskId: task.id,
       plannedMinutes: 60,
       startAt: new Date(Date.now() + 3 * HOUR).toISOString(),
+      date: todayFor(new Date(Date.now() + 3 * HOUR)),
     });
 
     const done = await sessions.completeSession(userId, { sessionId: session.id });
@@ -132,6 +141,7 @@ describe("session reminders", () => {
       taskId: task.id,
       plannedMinutes: 60,
       startAt: new Date(Date.now() + 3 * HOUR).toISOString(),
+      date: todayFor(new Date(Date.now() + 3 * HOUR)),
     });
 
     await sessions.skipSession(userId, { sessionId: session.id });
@@ -147,6 +157,7 @@ describe("session reminders", () => {
       taskId: task.id,
       plannedMinutes: 60,
       startAt: new Date(Date.now() + 3 * HOUR).toISOString(),
+      date: todayFor(new Date(Date.now() + 3 * HOUR)),
     });
 
     // deriveTaskReminders wipes and re-derives on every task write, but only

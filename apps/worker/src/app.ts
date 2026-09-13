@@ -11,6 +11,7 @@ import {
   type TelegramChatChannel,
 } from "@persona/integrations";
 import {
+  cancelSessionInputSchema,
   chatInputSchema,
   completeSessionInputSchema,
   createTaskInputSchema,
@@ -462,6 +463,17 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     },
   );
 
+  app.post<{ Params: { id: string }; Body: { userId?: string } }>(
+    "/sessions/:id/cancel",
+    async (request, reply) => {
+      const { userId } = request.body ?? {};
+      if (!userId) return reply.code(400).send({ error: "userId is required" });
+      const parsed = cancelSessionInputSchema.safeParse({ sessionId: request.params.id });
+      if (!parsed.success) return reply.code(400).send({ error: parsed.error.flatten() });
+      return { session: await sessionService.cancelSession(userId, parsed.data) };
+    },
+  );
+
   // --- Desktop routes: gated by a desktop token (see requireDesktopUserId
   // above), never by the BFF shared secret and never by a client userId. ---
 
@@ -654,6 +666,14 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       return { session };
     },
   );
+
+  app.post<{ Params: { id: string } }>("/desktop/sessions/:id/cancel", async (request, reply) => {
+    const userId = await requireDesktopUserId(request, reply);
+    if (!userId) return;
+    const parsed = cancelSessionInputSchema.safeParse({ sessionId: request.params.id });
+    if (!parsed.success) return reply.code(400).send({ error: parsed.error.flatten() });
+    return { session: await sessionService.cancelSession(userId, parsed.data) };
+  });
 
   app.post<{
     Body: {

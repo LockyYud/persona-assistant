@@ -121,7 +121,7 @@ export function TaskList({ initialNow }: { initialNow: NowTasks }) {
         pendingIds={pendingIds}
       />
       <TaskGroup
-        title="Today"
+        title="Due today"
         tasks={now.today}
         tone="today"
         onComplete={handleComplete}

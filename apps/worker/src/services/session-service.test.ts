@@ -65,7 +65,7 @@ describe("DrizzleSessionService", () => {
     expect(session.date).toBe(dateKeyInTimezone(new Date(), "Pacific/Kiritimati"));
   });
 
-  it("revises the existing session instead of failing on a second plan", async () => {
+  it("allows multiple executable items on one task/day and revises by session id", async () => {
     const userId = await createTestUser();
     const task = await createTask(userId);
     const { sessions } = makeServices();
@@ -76,17 +76,18 @@ describe("DrizzleSessionService", () => {
       plannedMinutes: 60,
     });
     const second = await sessions.planSession(userId, {
+      sessionId: first.id,
       taskId: task.id,
       date: "2026-09-07",
       plannedMinutes: 90,
     });
 
-    // One session per task per day, so a second plan has to mean "actually,
-    // make it 90 minutes".
     expect(second.id).toBe(first.id);
     expect(second.plannedMinutes).toBe(90);
     const all = await sessions.listSessions(userId, { taskId: task.id });
     expect(all).toHaveLength(1);
+    const additional = await sessions.planSession(userId, { taskId: task.id, date: "2026-09-07", plannedMinutes: 30 });
+    expect(additional.id).not.toBe(first.id);
   });
 
   it("keeps daily focus separate from task structure and lets a revision change it", async () => {
@@ -101,6 +102,7 @@ describe("DrizzleSessionService", () => {
       focusText: "Run baseline",
     });
     const revised = await sessions.planSession(userId, {
+      sessionId: first.id,
       taskId: task.id,
       date: "2026-09-07",
       plannedMinutes: 90,
@@ -118,7 +120,7 @@ describe("DrizzleSessionService", () => {
     const ordinary = await tasks.createTask(userId, { title: "RAG Lab", priority: "high", type: "work" });
     const routine = await createTask(userId, "English");
 
-    const planned = await sessions.planToday(userId, {
+    const planned = await sessions.setTodayPlan(userId, {
       items: [
         { taskId: ordinary.id, focusText: "Run baseline", plannedMinutes: 90 },
         { taskId: routine.id, focusText: "Speaking", plannedMinutes: 45 },
@@ -138,7 +140,7 @@ describe("DrizzleSessionService", () => {
     await tasks.completeTask(userId, { taskId: terminal.id });
 
     await expect(
-      sessions.planToday(userId, {
+      sessions.setTodayPlan(userId, {
         items: [
           { taskId: valid.id, plannedMinutes: 60 },
           { taskId: terminal.id, plannedMinutes: 60 },
@@ -148,26 +150,20 @@ describe("DrizzleSessionService", () => {
     expect(await sessions.listSessions(userId, {})).toEqual([]);
   });
 
-  it("refuses Today items for steps and duplicate tasks", async () => {
+  it("refuses Today items for steps and allows multiple actions on one task", async () => {
     const userId = await createTestUser();
     const { tasks, sessions } = makeServices();
     const parent = await tasks.createTask(userId, { title: "Parent", priority: "high", type: "work" });
     const [step] = await tasks.createSubtasks(userId, { parentTaskId: parent.id, titles: ["Step"] });
 
-    await expect(sessions.planToday(userId, { items: [{ taskId: step!.id, plannedMinutes: 60 }] })).rejects.toThrow(
+    await expect(sessions.setTodayPlan(userId, { items: [{ taskId: step!.id, plannedMinutes: 60 }] })).rejects.toThrow(
       "Steps cannot",
     );
-    await expect(
-      sessions.planToday(userId, {
-        items: [
-          { taskId: parent.id, plannedMinutes: 60 },
-          { taskId: parent.id, plannedMinutes: 60 },
-        ],
-      }),
-    ).rejects.toThrow("only once");
+    const items = await sessions.setTodayPlan(userId, { items: [{ taskId: parent.id, plannedMinutes: 60 }, { taskId: parent.id, plannedMinutes: 60 }] });
+    expect(items).toHaveLength(2);
   });
 
-  it("revives a day it had been told to skip", async () => {
+  it("preserves skipped history and creates a new item on replan", async () => {
     const userId = await createTestUser();
     const task = await createTask(userId);
     const { sessions } = makeServices();
@@ -185,6 +181,46 @@ describe("DrizzleSessionService", () => {
     });
 
     expect(revised.status).toBe("planned");
+    expect((await sessions.listSessions(userId, { taskId: task.id })).map((item) => item.status)).toEqual(["skipped", "planned"]);
+  });
+
+  it("replaces only planned items, cancelling omissions without rewriting history", async () => {
+    const userId = await createTestUser();
+    const doneTask = await createTask(userId, "Done");
+    const skippedTask = await createTask(userId, "Skipped");
+    const removedTask = await createTask(userId, "Removed");
+    const nextTask = await createTask(userId, "Next");
+    const { sessions } = makeServices();
+
+    const initial = await sessions.setTodayPlan(userId, {
+      items: [
+        { taskId: doneTask.id, plannedMinutes: 30 },
+        { taskId: skippedTask.id, plannedMinutes: 30 },
+        { taskId: removedTask.id, plannedMinutes: 30 },
+      ],
+    });
+    await sessions.completeSession(userId, { sessionId: initial[0]!.id });
+    await sessions.skipSession(userId, { sessionId: initial[1]!.id });
+
+    await sessions.setTodayPlan(userId, { items: [{ taskId: nextTask.id, plannedMinutes: 45 }] });
+
+    const statuses = (await sessions.listSessions(userId, {})).map((item) => item.status).sort();
+    expect(statuses).toEqual(["cancelled", "done", "planned", "skipped"]);
+  });
+
+  it("rejects a timed item whose local date differs from its session date", async () => {
+    const userId = await createTestUser("Asia/Bangkok");
+    const task = await createTask(userId);
+    const { sessions } = makeServices();
+
+    await expect(
+      sessions.planSession(userId, {
+        taskId: task.id,
+        date: "2026-09-07",
+        plannedMinutes: 30,
+        startAt: "2026-09-08T09:00:00.000Z",
+      }),
+    ).rejects.toThrow("local calendar day");
   });
 
   it("leaves finished work finished when the commitment is revised", async () => {
@@ -204,9 +240,8 @@ describe("DrizzleSessionService", () => {
       plannedMinutes: 90,
     });
 
-    // Changing what was committed to is not un-doing work that happened.
-    expect(revised.status).toBe("done");
-    expect(revised.actualMinutes).toBe(45);
+    expect(revised.status).toBe("planned");
+    expect((await sessions.listSessions(userId, { taskId: task.id })).map((item) => item.status)).toEqual(["done", "planned"]);
   });
 
   it("keeps an existing start time when the revision omits one", async () => {
@@ -221,6 +256,7 @@ describe("DrizzleSessionService", () => {
     });
 
     const revised = await sessions.planSession(userId, {
+      sessionId: planned.id,
       taskId: task.id,
       date: "2026-09-07",
       plannedMinutes: 90,
@@ -258,19 +294,15 @@ describe("DrizzleSessionService", () => {
     expect(done.actualMinutes).toBe(20);
   });
 
-  it("clears recorded minutes when a session is skipped after the fact", async () => {
+  it("does not let skip rewrite completed history", async () => {
     const userId = await createTestUser();
     const task = await createTask(userId);
     const { sessions } = makeServices();
     const planned = await sessions.planSession(userId, { taskId: task.id, plannedMinutes: 60 });
     await sessions.completeSession(userId, { sessionId: planned.id, actualMinutes: 30 });
 
-    const skipped = await sessions.skipSession(userId, { sessionId: planned.id });
-
-    // A skipped session is one that did not happen; leaving 30 minutes on it
-    // would keep crediting time to the month.
-    expect(skipped.status).toBe("skipped");
-    expect(skipped.actualMinutes).toBeNull();
+    await expect(sessions.skipSession(userId, { sessionId: planned.id })).rejects.toThrow("Session not found");
+    await expect(sessions.completeSession(userId, { sessionId: planned.id })).rejects.toThrow("Session not found");
   });
 
   it("refuses to plan against a task belonging to someone else", async () => {
@@ -299,7 +331,7 @@ describe("DrizzleSessionService", () => {
     );
   });
 
-  it("lists a day's sessions with timed ones first, in clock order", async () => {
+  it("lists a day's sessions in explicit plan position", async () => {
     const userId = await createTestUser();
     const morning = await createTask(userId, "Morning");
     const evening = await createTask(userId, "Evening");
@@ -326,7 +358,7 @@ describe("DrizzleSessionService", () => {
 
     const today = await sessions.listSessionsForDate(userId, "2026-09-07");
 
-    expect(today.map((s) => s.task.title)).toEqual(["Morning", "Evening", "Untimed"]);
+    expect(today.map((s) => s.task.title)).toEqual(["Untimed", "Evening", "Morning"]);
   });
 
   it("scopes a day's list to the owner and the day asked for", async () => {

@@ -115,6 +115,57 @@ export async function completeTask(userId: string, taskId: string) {
   });
 }
 
+export interface TodaySessionRow {
+  id: string;
+  taskId: string;
+  date: string;
+  startAt: string | null;
+  focusText: string | null;
+  position: number;
+  plannedMinutes: number;
+  actualMinutes: number | null;
+  status: "planned" | "done" | "skipped" | "cancelled";
+  task: TaskRow;
+}
+
+export async function getToday(userId: string) {
+  return workerFetch(`/sessions/today?userId=${encodeURIComponent(userId)}`) as Promise<{
+    date: string;
+    timezone: string;
+    sessions: TodaySessionRow[];
+    missedYesterday: TodaySessionRow[];
+    ongoing: TaskRow[];
+  }>;
+}
+
+export async function completeSession(userId: string, sessionId: string) {
+  return workerFetch(`/sessions/${encodeURIComponent(sessionId)}/complete`, {
+    method: "POST",
+    body: JSON.stringify({ userId }),
+  });
+}
+
+export async function skipSession(userId: string, sessionId: string) {
+  return workerFetch(`/sessions/${encodeURIComponent(sessionId)}/skip`, {
+    method: "POST",
+    body: JSON.stringify({ userId }),
+  });
+}
+
+export async function cancelSession(userId: string, sessionId: string) {
+  return workerFetch(`/sessions/${encodeURIComponent(sessionId)}/cancel`, {
+    method: "POST",
+    body: JSON.stringify({ userId }),
+  });
+}
+
+export async function planSession(
+  userId: string,
+  input: { sessionId?: string; taskId: string; plannedMinutes: number; focusText?: string | null },
+) {
+  return workerFetch("/sessions", { method: "POST", body: JSON.stringify({ userId, ...input }) });
+}
+
 export interface TaskRow {
   id: string;
   title: string;

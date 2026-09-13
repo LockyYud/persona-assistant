@@ -15,8 +15,10 @@ export default async function TasksPage() {
       <header className="app-header">
         <h1>Now</h1>
         <nav>
-          <Link href="/">Back to chat</Link>
+          <Link href="/today">Today</Link>
+          <Link href="/">Chat</Link>
           <Link href="/tasks/all">All tasks</Link>
+          <Link href="/settings">Settings</Link>
         </nav>
       </header>
       <TaskList initialNow={now} />

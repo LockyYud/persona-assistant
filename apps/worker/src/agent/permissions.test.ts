@@ -32,7 +32,7 @@ describe("getToolPolicy", () => {
     // database in one call.
     expect(getToolPolicy("createSubtasks")).toBe("confirm");
     expect(getToolPolicy("proposeTaskBreakdown")).toBe("auto");
-    expect(getToolPolicy("planToday")).toBe("confirm");
+    expect(getToolPolicy("setTodayPlan")).toBe("confirm");
   });
 
   it("defaults an unlisted tool name to confirm, including the old confirmAction/rejectAction meta-tools", () => {

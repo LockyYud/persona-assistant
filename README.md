@@ -223,11 +223,12 @@ curl -X POST "https://api.telegram.org/bot<TELEGRAM_BOT_TOKEN>/setWebhook" \
   deliberately does *not* stop the task — "no longer measured monthly" is not
   "no longer doing this".
 - **Day planning, by choosing rather than by generating.** A `work_sessions`
-  row is one day's committed work on a task — "today I'll spend an hour on
-  English" — created from the desktop widget or in chat, never generated. One
-  session per task per day, so planning the same pair again revises it; a day
-  previously skipped comes back to life, but a session already finished stays
-  finished. Completing one with no minutes given credits the minutes committed
+  row is one executable commitment — "today I'll run the baseline for 90
+  minutes" — created from the desktop widget or in chat, never generated. A
+  task can have several ordered sessions on one day. `planSession` adds one or
+  revises its explicit id; `setTodayPlan` replaces only the remaining planned
+  items, marking omitted ones `cancelled` while retaining done and skipped
+  history. Completing one with no minutes given credits the minutes committed
   to (ticking off shouldn't require typing a number); passing them records what
   really happened. Sessions are **never deleted** — a missed day is the
   denominator of the whole measurement, and deleting misses makes adherence read

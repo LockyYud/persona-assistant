@@ -117,6 +117,25 @@ button {
   background: #fef2f2;
 }
 
+.today-card,
+.today-section {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 1rem;
+  margin-bottom: 1rem;
+}
+
+.today-total { margin: 0 0 0.8rem; color: var(--text-muted); }
+.today-list { list-style: decimal; margin: 0; padding-left: 1.4rem; }
+.today-item { display: flex; gap: 1rem; justify-content: space-between; padding: 0.8rem 0; border-top: 1px solid var(--border); }
+.today-item-main { display: flex; flex-direction: column; gap: 0.2rem; }
+.today-task, .today-meta { color: var(--text-muted); font-size: 0.85rem; }
+.today-actions { display: flex; align-items: center; gap: 0.4rem; }
+.today-section h2 { font-size: 0.95rem; margin: 0 0 0.5rem; }
+.today-section p { margin: 0.45rem 0; }
+
 /* Chat */
 .chat-layout {
   display: flex;

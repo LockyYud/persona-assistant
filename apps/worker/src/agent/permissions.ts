@@ -26,6 +26,7 @@ const TOOL_POLICIES: Record<string, ToolPolicy> = {
   planSession: "auto",
   completeSession: "auto",
   skipSession: "auto",
+  cancelSession: "auto",
   listSessions: "auto",
   notion_search: "auto",
   notion_get_page: "auto",

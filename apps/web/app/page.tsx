@@ -10,7 +10,9 @@ export default async function HomePage() {
       <header className="app-header">
         <h1>Persona Assistant</h1>
         <nav>
+          <Link href="/today">Today</Link>
           <Link href="/tasks">Tasks</Link>
+          <Link href="/">Chat</Link>
           <Link href="/settings">Settings</Link>
           <span className="user-email">{session?.user?.email}</span>
           <form

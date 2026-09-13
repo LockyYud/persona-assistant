@@ -125,15 +125,12 @@ export const setRoutineTargetInputSchema = z.object({
 });
 export type SetRoutineTargetInput = z.infer<typeof setRoutineTargetInputSchema>;
 
-export const workSessionStatusSchema = z.enum(["planned", "done", "skipped"]);
+export const workSessionStatusSchema = z.enum(["planned", "done", "skipped", "cancelled"]);
 
-/**
- * Commits a stretch of today (or another day) to one task. Idempotent per
- * (task, day): planning the same task again for the same day revises that
- * session rather than failing, which is what "actually make it 90 minutes"
- * has to mean when there can only be one session per task per day.
- */
+/** Commits one executable item. Omit sessionId to append; pass it to revise. */
 export const planSessionInputSchema = z.object({
+  /** Pass this only to revise one still-planned item. Omit to append a new one. */
+  sessionId: z.string().uuid().optional(),
   taskId: z.string().uuid(),
   /** Defaults to the user's own today, resolved in their timezone. */
   date: dateKeySchema.optional(),
@@ -146,7 +143,9 @@ export const planSessionInputSchema = z.object({
 export type PlanSessionInput = z.infer<typeof planSessionInputSchema>;
 
 /** A proposed commitment in the one-click Today plan shown in Telegram. */
-export const planTodayItemInputSchema = z.object({
+export const todayPlanItemInputSchema = z.object({
+  /** Existing planned item to retain/revise in a full replacement. */
+  sessionId: z.string().uuid().optional(),
   taskId: z.string().uuid(),
   focusText: focusTextSchema.nullable().optional(),
   plannedMinutes: sessionMinutesSchema,
@@ -154,23 +153,23 @@ export const planTodayItemInputSchema = z.object({
 });
 
 /** Plans several distinct top-level tasks for the user's local current day. */
-export const planTodayInputSchema = z
-  .object({ items: z.array(planTodayItemInputSchema).min(1).max(12) })
+export const setTodayPlanInputSchema = z
+  .object({ items: z.array(todayPlanItemInputSchema).min(1).max(24) })
   .superRefine(({ items }, ctx) => {
-    const ids = new Set<string>();
+    const sessionIds = new Set<string>();
     let total = 0;
     for (const [index, item] of items.entries()) {
-      if (ids.has(item.taskId)) {
-        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["items", index, "taskId"], message: "task may appear only once" });
+      if (item.sessionId && sessionIds.has(item.sessionId)) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["items", index, "sessionId"], message: "session may appear only once" });
       }
-      ids.add(item.taskId);
+      if (item.sessionId) sessionIds.add(item.sessionId);
       total += item.plannedMinutes;
     }
     if (total > 24 * 60) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["items"], message: "planned minutes exceed one day" });
     }
   });
-export type PlanTodayInput = z.infer<typeof planTodayInputSchema>;
+export type SetTodayPlanInput = z.infer<typeof setTodayPlanInputSchema>;
 
 /**
  * Closes a session out as done. Omitting actualMinutes credits the minutes
@@ -192,6 +191,10 @@ export const skipSessionInputSchema = z.object({
   sessionId: z.string().uuid(),
 });
 export type SkipSessionInput = z.infer<typeof skipSessionInputSchema>;
+
+/** Remove a still-planned item because the plan changed; it is not a skip. */
+export const cancelSessionInputSchema = z.object({ sessionId: z.string().uuid() });
+export type CancelSessionInput = z.infer<typeof cancelSessionInputSchema>;
 
 /** Inclusive date range; both ends optional. */
 export const listSessionsInputSchema = z.object({

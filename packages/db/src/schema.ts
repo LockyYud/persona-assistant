@@ -373,12 +373,17 @@ export const workSessions = pgTable(
     // allowing "I only managed 20 minutes" to be recorded honestly.
     actualMinutes: integer("actual_minutes"),
     // "skipped" is a deliberate pass and is excluded from the pace numerator;
+    // "cancelled" means the plan changed before the work happened, and is
+    // likewise kept as history rather than being mistaken for a missed item.
     // a "planned" session whose day has gone by is a miss. The distinction
     // only survives because sessions are never deleted — delete the misses
     // and adherence reads 100% forever.
-    status: text("status", { enum: ["planned", "done", "skipped"] })
+    status: text("status", { enum: ["planned", "done", "skipped", "cancelled"] })
       .notNull()
       .default("planned"),
+    // Today is an ordered list. This belongs on the executable item rather
+    // than the task because one task may have several actions in one day.
+    position: integer("position").notNull().default(0),
     // The one reminder a session gets, when it was given a start time. Held
     // here rather than as a column on `reminders` so that table — the most
     // reliability-critical one in the app — needs no change at all: a session
@@ -393,13 +398,14 @@ export const workSessions = pgTable(
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => ({
-    // At most one session per task per day, so "how long did I spend on this
-    // today" stays a single number to read and a single row to edit. Splitting
-    // a day into a morning and an evening block would mean dropping this and
-    // summing instead.
-    taskDateUnique: uniqueIndex("work_sessions_task_date_idx").on(table.taskId, table.date),
-    // Drives both "what did I pick for today" and the month window the pace
-    // figures are computed over.
+    // Drives both ordered Today lists and the month window the pace figures
+    // are computed over. Positions intentionally are not unique: cancelled
+    // historical rows keep their old place while a replacement plan reuses it.
+    userDatePositionIdx: index("work_sessions_user_date_position_idx").on(
+      table.userId,
+      table.date,
+      table.position,
+    ),
     userDateIdx: index("work_sessions_user_date_idx").on(table.userId, table.date),
     notionPageIdUnique: uniqueIndex("work_sessions_notion_page_id_idx")
       .on(table.notionPageId)

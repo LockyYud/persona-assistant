@@ -28,7 +28,7 @@ describe("session tools", () => {
     // and would surprise the user with an approval prompt.
     expect(names).toContain("listToday");
     expect(names).toContain("planSession");
-    expect(names).toContain("planToday");
+    expect(names).toContain("setTodayPlan");
     expect(names).toContain("completeSession");
     expect(names).toContain("skipSession");
     expect(names).toContain("listSessions");
@@ -68,7 +68,7 @@ describe("session tools", () => {
     const second = await ctx.taskService.createTask(userId, { title: "CV", priority: "medium", type: "work" });
 
     const result = (await executeTool(
-      "planToday",
+      "setTodayPlan",
       {
         items: [
           { taskId: first.id, focusText: "Run baseline", plannedMinutes: 90 },

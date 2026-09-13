@@ -12,7 +12,8 @@ interface ChatEntry {
   role: "user" | "assistant";
   text: string;
   pendingApproval?: PendingApproval;
-  resolved?: "approved" | "rejected";
+  resolved?: "approved" | "rejected" | "failed";
+  resolutionError?: string;
 }
 
 interface ConversationRow {
@@ -137,14 +138,25 @@ export function ChatPanel() {
     if (!approval) return;
 
     try {
-      await fetch("/api/approvals", {
+      const response = await fetch("/api/approvals", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ approvalId: approval.approvalId, decision }),
       });
-    } finally {
+      if (!response.ok) {
+        const body = await response.json().catch(() => ({}));
+        throw new Error(body.error ?? "Không thể thực hiện kế hoạch. Hãy tạo plan mới.");
+      }
       setEntries((prev) =>
         prev.map((entry, index) => (index === entryIndex ? { ...entry, resolved: decision } : entry)),
+      );
+    } catch (error) {
+      setEntries((prev) =>
+        prev.map((entry, index) =>
+          index === entryIndex
+            ? { ...entry, resolved: "failed", resolutionError: error instanceof Error ? error.message : "Không thể thực hiện." }
+            : entry,
+        ),
       );
     }
   }
@@ -197,7 +209,7 @@ export function ChatPanel() {
               )}
               {entry.resolved && (
                 <div className="approval-resolved">
-                  {entry.resolved === "approved" ? "Đã xác nhận." : "Đã huỷ."}
+                  {entry.resolved === "approved" ? "Đã xác nhận." : entry.resolved === "rejected" ? "Đã huỷ." : entry.resolutionError}
                 </div>
               )}
             </div>

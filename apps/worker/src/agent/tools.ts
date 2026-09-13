@@ -1,12 +1,13 @@
 import {
   completeSessionInputSchema,
+  cancelSessionInputSchema,
   completeTaskInputSchema,
   createReminderInputSchema,
   createSubtasksInputSchema,
   createTaskInputSchema,
   listSessionsInputSchema,
   listTasksInputSchema,
-  planTodayInputSchema,
+  setTodayPlanInputSchema,
   planSessionInputSchema,
   proposeTaskBreakdownInputSchema,
   skipSessionInputSchema,
@@ -111,7 +112,7 @@ export function buildToolDefinitions(
       function: {
         name: "listToday",
         description:
-          "What the user committed to today, unfinished commitments from yesterday, plus every routine still asking for time this month with its pace. THE tool for 'what am I doing today', 'what should I work on', 'am I on track', 'how's my English going'. If sessions already exist, report them rather than proposing a replacement. If none exist, use due tasks, priority and routine pace to propose a plan; do not create it until the user approves planToday.",
+          "What the user committed to today, unfinished commitments from yesterday, plus every routine still asking for time this month with its pace. THE tool for 'what am I doing today', 'what should I work on', 'am I on track', 'how's my English going'. If sessions already exist, report them rather than proposing a replacement. If none exist, use due tasks, priority and routine pace to propose a plan; do not create it until the user approves setTodayPlan.",
         parameters: { type: "object", properties: {}, additionalProperties: false },
       },
     },
@@ -120,17 +121,17 @@ export function buildToolDefinitions(
       function: {
         name: "planSession",
         description:
-          "Record one explicit commitment on an ordinary task or a routine — 'today I'll run the baseline for 90 minutes' becomes planSession(taskId, focusText: 'Run baseline', plannedMinutes: 90). There is one session per task per day, so calling this again revises it rather than adding a second. Pass startAt only if the user named a time, which is also what earns a reminder. Completing this session never completes its parent task.",
+          "Record one explicit commitment on an ordinary task or a routine — 'today I'll run the baseline for 90 minutes' becomes planSession(taskId, focusText: 'Run baseline', plannedMinutes: 90). Omitting sessionId adds an executable item; pass sessionId only to revise that planned item. Multiple items may belong to the same task on one day. Pass startAt only if the user named a time, which is also what earns a reminder. Completing this session never completes its parent task.",
         parameters: zodToJsonSchema(planSessionInputSchema) as Record<string, unknown>,
       },
     },
     {
       type: "function",
       function: {
-        name: "planToday",
+        name: "setTodayPlan",
         description:
-          "Propose a complete Today plan containing several distinct top-level tasks/routines. This always requires the user's Telegram approval before it writes anything. Include a short focusText whenever the user named concrete work. Do not use for a single explicit commitment; use planSession for that.",
-        parameters: zodToJsonSchema(planTodayInputSchema) as Record<string, unknown>,
+          "Replace the still-planned portion of today's plan with this ordered list. This always requires Telegram approval. Include sessionId for existing planned items that stay in the plan; omitted old planned items become cancelled. Completed, skipped and cancelled history is never changed. Multiple items may belong to the same top-level task.",
+        parameters: zodToJsonSchema(setTodayPlanInputSchema) as Record<string, unknown>,
       },
     },
     {
@@ -140,6 +141,15 @@ export function buildToolDefinitions(
         description:
           "Mark today's session on a task as done. Omit actualMinutes when the user just says they did it — the minutes they committed to are credited. Pass actualMinutes when they say how long it really took ('I only managed 20 minutes').",
         parameters: zodToJsonSchema(completeSessionInputSchema) as Record<string, unknown>,
+      },
+    },
+    {
+      type: "function",
+      function: {
+        name: "cancelSession",
+        description:
+          "Remove one still-planned Today item because the plan changed. This is not skip: cancelled items are excluded from commitment adherence, while skipped means the user chose not to do it.",
+        parameters: zodToJsonSchema(cancelSessionInputSchema) as Record<string, unknown>,
       },
     },
     {
@@ -350,9 +360,12 @@ export async function executeTool(
       const input = planSessionInputSchema.parse(rawArgs);
       return ctx.sessionService.planSession(ctx.userId, input);
     }
+    case "setTodayPlan":
+    // Keeps confirmations created by the immediately previous release
+    // executable after deployment; newly generated plans use the precise name.
     case "planToday": {
-      const input = planTodayInputSchema.parse(rawArgs);
-      return ctx.sessionService.planToday(ctx.userId, input);
+      const input = setTodayPlanInputSchema.parse(rawArgs);
+      return ctx.sessionService.setTodayPlan(ctx.userId, input);
     }
     case "completeSession": {
       const input = completeSessionInputSchema.parse(rawArgs);
@@ -361,6 +374,10 @@ export async function executeTool(
     case "skipSession": {
       const input = skipSessionInputSchema.parse(rawArgs);
       return ctx.sessionService.skipSession(ctx.userId, input);
+    }
+    case "cancelSession": {
+      const input = cancelSessionInputSchema.parse(rawArgs);
+      return ctx.sessionService.cancelSession(ctx.userId, input);
     }
     case "listSessions": {
       const input = listSessionsInputSchema.parse(rawArgs);

@@ -440,7 +440,7 @@ function buildSystemPrompt(
       `The user's routines this calendar month:\n${lines}\n` +
         `When he asks what to do today, or whether he is on track, answer from these — the ` +
         `suggested minutes already account for what is left and how much of the month remains. ` +
-        `For a full proposed day, show the items and call planToday so Telegram asks for approval; ` +
+        `For a full proposed day, show the items and call setTodayPlan so Telegram asks for approval; ` +
         `use planSession only for one explicit commitment the user asked to create directly.`,
     );
   }

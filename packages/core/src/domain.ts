@@ -85,7 +85,7 @@ export interface TaskWithProgress extends Task {
   pace: Pace | null;
 }
 
-export type WorkSessionStatus = "planned" | "done" | "skipped";
+export type WorkSessionStatus = "planned" | "done" | "skipped" | "cancelled";
 
 /**
  * One day's committed work on a task. Created only because the user picked
@@ -100,6 +100,8 @@ export interface WorkSession {
   startAt: Date | null;
   /** What the user intends to focus on during this day's commitment. */
   focusText: string | null;
+  /** Display order within this local day; smaller positions appear first. */
+  position: number;
   plannedMinutes: number;
   /** Null while still planned; on completion it defaults to plannedMinutes. */
   actualMinutes: number | null;

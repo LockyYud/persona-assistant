@@ -363,7 +363,7 @@ describe("telegram webhook resilience", () => {
       .insert(schema.approvalRequests)
       .values({
         userId,
-        action: "planToday",
+        action: "setTodayPlan",
         payload: { items: [{ taskId: task!.id, focusText: "Run baseline", plannedMinutes: 90 }] },
       })
       .returning();
@@ -408,7 +408,7 @@ describe("telegram webhook resilience", () => {
       .returning();
     const [approval] = await getTestDb()
       .insert(schema.approvalRequests)
-      .values({ userId, action: "planToday", payload: { items: [{ taskId: task!.id, plannedMinutes: 60 }] } })
+      .values({ userId, action: "setTodayPlan", payload: { items: [{ taskId: task!.id, plannedMinutes: 60 }] } })
       .returning();
     const app = buildApp({ db: getTestDb(), notificationChannel: stubChannel() });
 
