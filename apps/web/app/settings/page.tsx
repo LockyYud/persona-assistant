@@ -14,7 +14,7 @@ export default async function SettingsPage() {
     <main className="app-shell">
       <header className="app-header">
         <h1>Settings</h1>
-        <Link href="/">Back to chat</Link>
+        <Link href="/chat">Back to chat</Link>
       </header>
       <section className="settings-section">
         <h2>Connect this desktop</h2>

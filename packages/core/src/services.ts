@@ -7,6 +7,7 @@ import type {
   CreateTaskInput,
   ListSessionsInput,
   ListTasksInput,
+  PlanTodayInput,
   SetTodayPlanInput,
   PlanSessionInput,
   SkipSessionInput,
@@ -52,6 +53,8 @@ export interface SessionService {
   planSession(userId: string, input: PlanSessionInput): Promise<WorkSession>;
   /** Replaces only the still-planned portion of the user's current-day plan. */
   setTodayPlan(userId: string, input: SetTodayPlanInput): Promise<WorkSession[]>;
+  /** Compatibility executor for pre-setTodayPlan approvals; merge/upsert only. */
+  planToday(userId: string, input: PlanTodayInput): Promise<WorkSession[]>;
   completeSession(userId: string, input: CompleteSessionInput): Promise<WorkSession>;
   skipSession(userId: string, input: SkipSessionInput): Promise<WorkSession>;
   cancelSession(userId: string, input: CancelSessionInput): Promise<WorkSession>;

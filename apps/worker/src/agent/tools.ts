@@ -6,6 +6,7 @@ import {
   createSubtasksInputSchema,
   createTaskInputSchema,
   listSessionsInputSchema,
+  planTodayInputSchema,
   listTasksInputSchema,
   setTodayPlanInputSchema,
   planSessionInputSchema,
@@ -130,7 +131,7 @@ export function buildToolDefinitions(
       function: {
         name: "setTodayPlan",
         description:
-          "Replace the still-planned portion of today's plan with this ordered list. This always requires Telegram approval. Include sessionId for existing planned items that stay in the plan; omitted old planned items become cancelled. Completed, skipped and cancelled history is never changed. Multiple items may belong to the same top-level task.",
+          "Replace the still-planned portion of today's plan with this ordered list. This requires approval before execution. Include sessionId for existing planned items that stay in the plan; omitted old planned items become cancelled. An empty list clears all remaining planned items. Completed, skipped and cancelled history is never changed. Multiple items may belong to the same top-level task.",
         parameters: zodToJsonSchema(setTodayPlanInputSchema) as Record<string, unknown>,
       },
     },
@@ -360,12 +361,15 @@ export async function executeTool(
       const input = planSessionInputSchema.parse(rawArgs);
       return ctx.sessionService.planSession(ctx.userId, input);
     }
-    case "setTodayPlan":
-    // Keeps confirmations created by the immediately previous release
-    // executable after deployment; newly generated plans use the precise name.
-    case "planToday": {
+    case "setTodayPlan": {
       const input = setTodayPlanInputSchema.parse(rawArgs);
       return ctx.sessionService.setTodayPlan(ctx.userId, input);
+    }
+    // Keep the old merge/upsert executor for approvals created before the
+    // replace-style setTodayPlan tool. Remove after the pending queue expires.
+    case "planToday": {
+      const input = planTodayInputSchema.parse(rawArgs);
+      return ctx.sessionService.planToday(ctx.userId, input);
     }
     case "completeSession": {
       const input = completeSessionInputSchema.parse(rawArgs);

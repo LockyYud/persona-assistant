@@ -114,6 +114,29 @@ describe("DrizzleSessionService", () => {
     expect(await makeServices().tasks.listSubtasks(userId, task.id)).toEqual([]);
   });
 
+  it("can clear a timed commitment back to an untimed item", async () => {
+    const userId = await createTestUser();
+    const task = await createTask(userId);
+    const { sessions } = makeServices();
+    const planned = await sessions.planSession(userId, {
+      taskId: task.id,
+      plannedMinutes: 60,
+      startAt: "2099-06-01T09:00:00.000Z",
+      date: "2099-06-01",
+    });
+
+    const revised = await sessions.planSession(userId, {
+      sessionId: planned.id,
+      taskId: task.id,
+      plannedMinutes: 60,
+      date: "2099-06-01",
+      startAt: null,
+    });
+
+    expect(revised.startAt).toBeNull();
+    expect(revised.reminderId).toBeNull();
+  });
+
   it("plans a confirmed Today batch atomically for ordinary tasks and routines", async () => {
     const userId = await createTestUser();
     const { tasks, sessions } = makeServices();
@@ -130,6 +153,37 @@ describe("DrizzleSessionService", () => {
     expect(planned).toHaveLength(2);
     expect(planned.map((item) => item.focusText)).toEqual(["Run baseline", "Speaking"]);
     expect(new Set(planned.map((item) => item.date)).size).toBe(1);
+  });
+
+  it("allows an empty replacement to cancel every remaining planned item", async () => {
+    const userId = await createTestUser();
+    const task = await createTask(userId);
+    const { sessions } = makeServices();
+    const [planned] = await sessions.setTodayPlan(userId, { items: [{ taskId: task.id, plannedMinutes: 30 }] });
+
+    const result = await sessions.setTodayPlan(userId, { items: [] });
+
+    expect(result).toHaveLength(1);
+    expect(result[0]).toMatchObject({ id: planned!.id, status: "cancelled" });
+  });
+
+  it("keeps legacy planToday as a merge/upsert and does not cancel other items", async () => {
+    const userId = await createTestUser();
+    const firstTask = await createTask(userId, "First");
+    const secondTask = await createTask(userId, "Second");
+    const { sessions } = makeServices();
+    const first = await sessions.planSession(userId, { taskId: firstTask.id, plannedMinutes: 30 });
+    await sessions.planSession(userId, { taskId: secondTask.id, plannedMinutes: 45 });
+
+    const merged = await sessions.planToday(userId, {
+      items: [{ taskId: firstTask.id, plannedMinutes: 90, focusText: "Continue" }],
+    });
+    const all = await sessions.listSessionsForDate(userId, first.date);
+
+    expect(merged).toHaveLength(1);
+    expect(merged[0]).toMatchObject({ id: first.id, plannedMinutes: 90, focusText: "Continue" });
+    expect(all).toHaveLength(2);
+    expect(all.find((item) => item.taskId === secondTask.id)?.status).toBe("planned");
   });
 
   it("refuses an invalid Today batch before it writes any session", async () => {

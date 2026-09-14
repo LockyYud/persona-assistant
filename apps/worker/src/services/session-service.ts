@@ -5,6 +5,7 @@ import type {
   CompleteSessionInput,
   CancelSessionInput,
   ListSessionsInput,
+  PlanTodayInput,
   PlanSessionInput,
   SessionService,
   SetTodayPlanInput,
@@ -179,6 +180,75 @@ export class DrizzleSessionService implements SessionService {
       updatedAt: new Date(),
     };
     if (input.focusText !== undefined) updates.focusText = input.focusText;
+    if (input.startAt !== undefined) {
+      updates.startAt = input.startAt === null ? null : new Date(input.startAt);
+    }
+
+    const [row] = await tx
+      .update(schema.workSessions)
+      .set(updates)
+      .where(eq(schema.workSessions.id, existing.id))
+      .returning();
+    if (!row) throw new Error("Failed to revise session");
+    return this.reconcileReminder(tx, toDomainSession(row), task.title, timezone);
+  }
+
+  /**
+   * Replays the old planToday contract for approvals created before the
+   * replace-style setTodayPlan tool. It upserts only the tasks in its payload;
+   * it never cancels unrelated planned sessions.
+   */
+  private async writeLegacySession(
+    tx: Tx,
+    task: Task,
+    date: string,
+    input: Pick<PlanTodayInput["items"][number], "plannedMinutes" | "focusText" | "startAt">,
+    timezone: string,
+  ): Promise<WorkSession> {
+    if (input.startAt && dateKeyInTimezone(new Date(input.startAt), timezone) !== date) {
+      throw new Error("startAt must be on the session's local calendar day");
+    }
+    const [existing] = await tx
+      .select()
+      .from(schema.workSessions)
+      .where(
+        and(
+          eq(schema.workSessions.taskId, task.id),
+          eq(schema.workSessions.userId, task.userId),
+          eq(schema.workSessions.date, date),
+        ),
+      )
+      .for("update");
+
+    if (!existing) {
+      const [last] = await tx
+        .select({ position: schema.workSessions.position })
+        .from(schema.workSessions)
+        .where(and(eq(schema.workSessions.userId, task.userId), eq(schema.workSessions.date, date)))
+        .orderBy(sql`${schema.workSessions.position} desc`)
+        .limit(1);
+      const [row] = await tx
+        .insert(schema.workSessions)
+        .values({
+          userId: task.userId,
+          taskId: task.id,
+          date,
+          plannedMinutes: input.plannedMinutes,
+          focusText: input.focusText ?? null,
+          startAt: input.startAt ? new Date(input.startAt) : null,
+          position: (last?.position ?? 0) + 1,
+        })
+        .returning();
+      if (!row) throw new Error("Failed to plan session");
+      return this.reconcileReminder(tx, toDomainSession(row), task.title, timezone);
+    }
+
+    const updates: Partial<typeof schema.workSessions.$inferInsert> = {
+      plannedMinutes: input.plannedMinutes,
+      status: existing.status === "skipped" ? "planned" : existing.status,
+      updatedAt: new Date(),
+    };
+    if (input.focusText !== undefined) updates.focusText = input.focusText;
     if (input.startAt !== undefined) updates.startAt = new Date(input.startAt);
 
     const [row] = await tx
@@ -251,6 +321,36 @@ export class DrizzleSessionService implements SessionService {
         if (row) cancelled.push(await this.dropReminder(tx, toDomainSession(row)));
       }
       return [...written, ...cancelled];
+    });
+    return Promise.all(sessions.map((session) => this.syncToNotion(session)));
+  }
+
+  async planToday(userId: string, input: PlanTodayInput): Promise<WorkSession[]> {
+    const taskIds = new Set(input.items.map((item) => item.taskId));
+    if (taskIds.size !== input.items.length) throw new Error("A task may appear only once in Today");
+    if (input.items.reduce((total, item) => total + item.plannedMinutes, 0) > 24 * 60) {
+      throw new Error("Today plan exceeds one day");
+    }
+    const timezone = await this.resolveTimezone(userId);
+    const date = dateKeyInTimezone(new Date(), timezone);
+    const sessions = await this.db.transaction(async (tx) => {
+      const tasks: Task[] = [];
+      for (const item of input.items) {
+        const [row] = await tx
+          .select()
+          .from(schema.tasks)
+          .where(and(eq(schema.tasks.id, item.taskId), eq(schema.tasks.userId, userId)))
+          .for("update");
+        if (!row) throw new Error("Task not found");
+        tasks.push(this.requirePlannableTask(toDomainTask(row)));
+      }
+      const written: WorkSession[] = [];
+      for (const [index, item] of input.items.entries()) {
+        const task = tasks[index];
+        if (!task) throw new Error("Task not found");
+        written.push(await this.writeLegacySession(tx, task, date, item, timezone));
+      }
+      return written;
     });
     return Promise.all(sessions.map((session) => this.syncToNotion(session)));
   }

@@ -80,6 +80,24 @@ describe("session tools", () => {
     expect(result.map((session) => session.focusText)).toEqual(["Run baseline", "Review CV"]);
   });
 
+  it("executes a legacy planToday approval with merge semantics", async () => {
+    const userId = await createTestUser();
+    const ctx = makeContext(userId);
+    const first = await ctx.taskService.createTask(userId, { title: "First", priority: "high", type: "work" });
+    const second = await ctx.taskService.createTask(userId, { title: "Second", priority: "medium", type: "work" });
+    await executeTool("planSession", { taskId: first.id, plannedMinutes: 30 }, ctx);
+    await executeTool("planSession", { taskId: second.id, plannedMinutes: 30 }, ctx);
+
+    const result = (await executeTool(
+      "planToday",
+      { items: [{ taskId: first.id, plannedMinutes: 90 }] },
+      ctx,
+    )) as { taskId: string; plannedMinutes: number }[];
+    expect(result).toHaveLength(1);
+    expect(result[0]).toMatchObject({ taskId: first.id, plannedMinutes: 90 });
+    expect((await ctx.sessionService.listSessions(userId, {}))).toHaveLength(2);
+  });
+
   it("plans a day of work from a chat-shaped call and reports it back in listToday", async () => {
     const userId = await createTestUser();
     const ctx = makeContext(userId);

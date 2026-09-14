@@ -16,12 +16,9 @@ const TOOL_POLICIES: Record<string, ToolPolicy> = {
   updateTask: "auto",
   completeTask: "auto",
   createReminder: "auto",
-  // Sessions are all "auto". Each one is a single row describing one day,
-  // trivially revised or skipped, and nothing about it reaches outside the
-  // user's own plan — a far smaller commitment than createSubtasks, which can
-  // add twenty rows to their real Notion database in one go. A future tool
-  // that plans a whole week at once would be a different question and should
-  // arrive as "confirm".
+  // Single-item session actions are auto-approved. A full-day replacement can
+  // cancel several commitments, so setTodayPlan intentionally falls through
+  // to the confirm default below.
   listToday: "auto",
   planSession: "auto",
   completeSession: "auto",

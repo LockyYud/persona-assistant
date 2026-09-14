@@ -161,7 +161,7 @@ export async function cancelSession(userId: string, sessionId: string) {
 
 export async function planSession(
   userId: string,
-  input: { sessionId?: string; taskId: string; plannedMinutes: number; focusText?: string | null },
+  input: { sessionId?: string; taskId: string; plannedMinutes: number; focusText?: string | null; startAt?: string | null },
 ) {
   return workerFetch("/sessions", { method: "POST", body: JSON.stringify({ userId, ...input }) });
 }

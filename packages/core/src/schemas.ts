@@ -137,8 +137,8 @@ export const planSessionInputSchema = z.object({
   plannedMinutes: sessionMinutesSchema,
   /** Omit to retain an existing focus; null explicitly clears it. */
   focusText: focusTextSchema.nullable().optional(),
-  /** Only for a session meant to happen at a set time; earns it a reminder. */
-  startAt: z.string().datetime().optional(),
+  /** Omit to retain an existing time; pass null to make the item untimed. */
+  startAt: z.string().datetime().nullable().optional(),
 });
 export type PlanSessionInput = z.infer<typeof planSessionInputSchema>;
 
@@ -149,12 +149,13 @@ export const todayPlanItemInputSchema = z.object({
   taskId: z.string().uuid(),
   focusText: focusTextSchema.nullable().optional(),
   plannedMinutes: sessionMinutesSchema,
-  startAt: z.string().datetime().optional(),
+  /** Omit to retain an existing time; pass null to make the item untimed. */
+  startAt: z.string().datetime().nullable().optional(),
 });
 
 /** Plans several distinct top-level tasks for the user's local current day. */
 export const setTodayPlanInputSchema = z
-  .object({ items: z.array(todayPlanItemInputSchema).min(1).max(24) })
+  .object({ items: z.array(todayPlanItemInputSchema).max(24) })
   .superRefine(({ items }, ctx) => {
     const sessionIds = new Set<string>();
     let total = 0;
@@ -170,6 +171,36 @@ export const setTodayPlanInputSchema = z
     }
   });
 export type SetTodayPlanInput = z.infer<typeof setTodayPlanInputSchema>;
+
+/** Compatibility payload for approvals created before setTodayPlan existed. */
+export const planTodayItemInputSchema = z.object({
+  taskId: z.string().uuid(),
+  focusText: focusTextSchema.nullable().optional(),
+  plannedMinutes: sessionMinutesSchema,
+  startAt: z.string().datetime().optional(),
+});
+
+export const planTodayInputSchema = z
+  .object({ items: z.array(planTodayItemInputSchema).min(1).max(12) })
+  .superRefine(({ items }, ctx) => {
+    const taskIds = new Set<string>();
+    let total = 0;
+    for (const [index, item] of items.entries()) {
+      if (taskIds.has(item.taskId)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["items", index, "taskId"],
+          message: "task may appear only once",
+        });
+      }
+      taskIds.add(item.taskId);
+      total += item.plannedMinutes;
+    }
+    if (total > 24 * 60) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["items"], message: "planned minutes exceed one day" });
+    }
+  });
+export type PlanTodayInput = z.infer<typeof planTodayInputSchema>;
 
 /**
  * Closes a session out as done. Omitting actualMinutes credits the minutes
