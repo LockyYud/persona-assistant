@@ -3,6 +3,7 @@ import { schema, type Database } from "@persona/db";
 import type { NotificationChannel, NotionClient } from "@persona/integrations";
 import { computeNextOccurrence } from "./rrule.js";
 import { pushProgressToNotion, syncNotionTasksForUser } from "../services/notion-sync.js";
+import { syncNotionSessionsForUser } from "../services/notion-session-sync.js";
 import { sendDailyBriefings, type DailyBriefingDeps } from "../services/daily-briefing.js";
 
 const LEASE_DURATION_MS = 2 * 60 * 1000;
@@ -15,6 +16,7 @@ export interface TickResult {
   dispatched: number;
   failed: number;
   notionSynced: number;
+  notionSessionsSynced: number;
   briefingsSent: number;
 }
 
@@ -35,6 +37,27 @@ async function syncNotionTasks(
     // just got ticked in Notion changes its parent's progress, and the parent
     // page itself never "changed" so nothing else would update it.
     await pushProgressToNotion(db, notion, user.id);
+  }
+  return synced;
+}
+
+/**
+ * Pulls Notion Today-item edits into Postgres for every user. Called after
+ * syncNotionTasks in the same tick, never before: a session's Task relation
+ * only resolves once its task has a Postgres row.
+ */
+async function syncNotionSessions(
+  db: Database,
+  notion: NotionClient | undefined,
+  databaseId: string | undefined,
+): Promise<number> {
+  if (!notion || !databaseId) return 0;
+
+  const users = await db.select().from(schema.users);
+  let synced = 0;
+  for (const user of users) {
+    const result = await syncNotionSessionsForUser(db, notion, databaseId, user.id);
+    synced += result.synced;
   }
   return synced;
 }
@@ -241,11 +264,15 @@ export async function runTick(
   getChatId: (triggerRunId: string) => Promise<string | null>,
   notion?: NotionClient,
   notionTasksDatabaseId?: string,
+  notionSessionsDatabaseId?: string,
   briefing?: Omit<DailyBriefingDeps, "db" | "channel">,
 ): Promise<TickResult> {
   const recovered = await recoverExpiredLeases(db);
   // Notion first: a briefing should reflect edits made in Notion overnight.
+  // Tasks before sessions, always — a session's Task relation can only
+  // resolve once the task it points at exists in Postgres.
   const notionSynced = await syncNotionTasks(db, notion, notionTasksDatabaseId);
+  const notionSessionsSynced = await syncNotionSessions(db, notion, notionSessionsDatabaseId);
   const claimedReminders = await claimDueReminders(db);
   const { dispatched, failed } = await dispatchOutbox(db, channel, getChatId);
 
@@ -261,5 +288,13 @@ export async function runTick(
     }
   }
 
-  return { recovered, claimedReminders, dispatched, failed, notionSynced, briefingsSent };
+  return {
+    recovered,
+    claimedReminders,
+    dispatched,
+    failed,
+    notionSynced,
+    notionSessionsSynced,
+    briefingsSent,
+  };
 }

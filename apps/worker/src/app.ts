@@ -818,6 +818,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       resolveChatId,
       notion,
       config.notionTasksDatabaseId,
+      config.notionSessionsDatabaseId,
       { taskService, client: briefingClient, model: config.llm.model },
     );
     return result;
