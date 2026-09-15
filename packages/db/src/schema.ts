@@ -22,6 +22,10 @@ export const users = pgTable("users", {
   // notion-sync.ts): the last_edited_time of the most recent Notion page
   // already applied, so each sync pass only re-fetches what changed since.
   notionSyncCursor: timestamp("notion_sync_cursor", { withTimezone: true }),
+  // Cursor for the inbound Notion->Postgres *session* sync (see
+  // notion-session-sync.ts). Kept separate from notionSyncCursor above
+  // because the Sessions database is polled independently of Tasks.
+  notionSessionsSyncCursor: timestamp("notion_sessions_sync_cursor", { withTimezone: true }),
   // Morning briefing (see services/daily-briefing.ts), in the user's own
   // timezone above.
   briefingEnabled: boolean("briefing_enabled").notNull().default(true),
