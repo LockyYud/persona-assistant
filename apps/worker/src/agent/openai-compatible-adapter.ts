@@ -33,10 +33,13 @@ import {
 } from "../memory/repository.js";
 import { generateConversationTitle } from "./conversation-title.js";
 import { describePace } from "../services/pace.js";
+import { describeNow } from "../services/local-time.js";
 
 const BASE_SYSTEM_PROMPT = `You are Duy's personal assistant. You can create and manage tasks
 and reminders on his behalf using the provided tools. Always confirm what you did in plain,
-concise language. Times you pass to tools must be ISO-8601 UTC datetimes.
+concise language. Times the user states ("7am") are in his local timezone, given below. Every
+datetime you pass to a tool must be ISO-8601 with an explicit offset or Z, converted from his local
+time (7am at UTC+07:00 is 2026-10-04T07:00:00+07:00, i.e. 2026-10-04T00:00:00Z).
 
 His task list and his Notion "Tasks" database are the SAME LIST, kept in sync both ways — the
 task tools already see everything in that Notion database. So for anything about his tasks
@@ -126,6 +129,11 @@ export class OpenAICompatibleAgentAdapter implements AgentRuntime {
     // looking. Only the actively-pursued routines are loaded, so a user with
     // none pays nothing for this.
     const { ongoing } = await this.taskService.listNowTasks(input.userId);
+    const [user] = await this.db
+      .select({ timezone: schema.users.timezone })
+      .from(schema.users)
+      .where(eq(schema.users.id, input.userId));
+    const timeContext = describeNow(new Date(), user?.timezone ?? "Asia/Bangkok");
 
     const messages: ChatCompletionMessageParam[] = [
       {
@@ -136,6 +144,7 @@ export class OpenAICompatibleAgentAdapter implements AgentRuntime {
           !!this.notion,
           !!this.tavily,
           ongoing,
+          timeContext,
         ),
       },
       ...history,
@@ -410,10 +419,11 @@ function buildSystemPrompt(
   notionEnabled: boolean,
   webSearchEnabled: boolean,
   ongoing: TaskWithProgress[],
+  timeContext: string,
 ): string {
   const sections = [
     BASE_SYSTEM_PROMPT,
-    `Current date/time (UTC): ${new Date().toISOString()}. Resolve relative dates ("tomorrow", "next Monday") against this.`,
+    timeContext,
   ];
 
   if (notionEnabled) {
