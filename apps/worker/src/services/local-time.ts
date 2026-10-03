@@ -66,3 +66,50 @@ export function localMonth(date: Date, timezone: string): LocalMonth {
     lastDate: `${monthKey}-${String(daysInMonth).padStart(2, "0")}`,
   };
 }
+
+function addDays(dateKey: string, days: number): string {
+  // Noon UTC so a day shift can never cross a date boundary on the host.
+  const d = new Date(`${dateKey}T12:00:00.000Z`);
+  d.setUTCDate(d.getUTCDate() + days);
+  return d.toISOString().slice(0, 10);
+}
+
+function weekdayOf(dateKey: string): string {
+  return new Intl.DateTimeFormat("en-US", { weekday: "long", timeZone: "UTC" }).format(
+    new Date(`${dateKey}T12:00:00.000Z`),
+  );
+}
+
+/** "+07:00"-style offset of `timezone` at the given moment. */
+export function utcOffsetInTimezone(date: Date, timezone: string): string {
+  const name =
+    new Intl.DateTimeFormat("en-US", { timeZone: timezone, timeZoneName: "longOffset" })
+      .formatToParts(date)
+      .find((p) => p.type === "timeZoneName")?.value ?? "GMT";
+  return name === "GMT" ? "+00:00" : name.replace("GMT", "");
+}
+
+/**
+ * The block of text that tells the model what "now" is for this user. Local
+ * time and an upcoming-days table are spelled out because models do weekday
+ * and timezone arithmetic unreliably; they should look dates up, not derive them.
+ */
+export function describeNow(date: Date, timezone: string): string {
+  const today = dateKeyInTimezone(date, timezone);
+  const minutes = minutesSinceMidnightInTimezone(date, timezone);
+  const hhmm = `${String(Math.floor(minutes / 60)).padStart(2, "0")}:${String(minutes % 60).padStart(2, "0")}`;
+  const offset = utcOffsetInTimezone(date, timezone);
+
+  const labels = ["today", "tomorrow"];
+  const upcoming = Array.from({ length: 8 }, (_, i) => {
+    const key = addDays(today, i);
+    return `${labels[i] ?? "+" + i + "d"}: ${weekdayOf(key)} ${key}`;
+  }).join("; ");
+
+  return (
+    `Current time: ${weekdayOf(today)} ${today} ${hhmm}, user's timezone ${timezone} (UTC${offset}). ` +
+    `UTC now: ${date.toISOString()}.\n` +
+    `Calendar (user's local dates): ${upcoming}.\n` +
+    `Resolve "today", "tomorrow", "next Monday" etc. from this calendar, never by guessing.`
+  );
+}
